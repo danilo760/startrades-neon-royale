@@ -13,3 +13,17 @@ jobs:
           node-version: 20
       - run: npm install
       - run: npm run check
+      - name: Smoke test production server
+        run: |
+          MOCK_MODE=true npm start > /tmp/startrades-server.log 2>&1 &
+          SERVER_PID=$!
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:4173/api/config; then
+              kill $SERVER_PID
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/startrades-server.log
+          kill $SERVER_PID || true
+          exit 1
