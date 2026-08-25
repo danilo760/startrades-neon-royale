@@ -1,24 +1,55 @@
 # StarTrades Neon Royale
 
-Crie um projeto React vazio chamado StarTrades Neon Royale. Não adicione banco de dados, autenticação ou funcionalidades.
+Battle Royale 2D visto de cima para a LIVE `@startrades01`. Personagens caminham, miram, disparam e recebem poderes acionados por presentes e comentários.
 
-This project was built with [Lovable](https://lovable.dev).
+## Recursos
 
-## Build with Lovable
+- Quatro personagens originais com quatro direções.
+- Movimento e combate automáticos, vida, escudo, energia, eliminações e ranking.
+- Poderes: rajada, escudo, suprimentos, granada, ataque aéreo, drone e meteoro.
+- Tempestade progressiva, partículas, tremor de câmera, música e efeitos sonoros originais.
+- Comentários: `!entrar`, `!esquerda`, `!direita`, `!cima`, `!baixo` e `!poder`.
+- Painel privado, modo simulação, integração TikTool e narrador Ollama.
 
-Continue developing this project in the [Lovable editor](https://lovable.dev/projects/451de5e8-26c7-4818-a8c2-c2db0a31aab2).
+## Instalação no Windows
 
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: every change made in Lovable is committed straight to this repository.
-- **Full ownership**: this code is yours. Push to `main` on GitHub and your changes sync back into Lovable, ready for your next prompt.
-
-## Development
-
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
-
-```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
+```powershell
+npm install
+Copy-Item .env.example .env
+ollama pull llama3.2:3b
 npm run dev
 ```
+
+Desenvolvimento: overlay em `http://127.0.0.1:5173` e painel em `http://127.0.0.1:5173/control`.
+
+Para o LIVE Studio:
+
+```powershell
+npm run build
+npm start
+```
+
+Use `http://127.0.0.1:4173` como fonte de navegador e abra `http://127.0.0.1:4173/control` somente no seu navegador.
+
+## LIVE real
+
+Edite somente o `.env` local:
+
+```env
+TIKTOK_USERNAME=startrades01
+TIKTOOL_API_KEY=SUA_CHAVE_LOCAL
+MOCK_MODE=false
+```
+
+Nunca envie `.env`, cookies, senha do TikTok ou a chave TikTool ao GitHub/Lovable.
+
+## Teste recomendado
+
+1. Abra overlay e painel.
+2. Clique em **Ativar áudio** no overlay.
+3. Adicione os seis jogadores de teste.
+4. Inicie a rodada.
+5. Simule presentes de 1, 5, 10, 30, 100, 300 e 1.000 diamantes.
+6. Teste pausa, tempestade e encerramento.
+
+TikTool é um serviço terceirizado, não oficial do TikTok. Faça uma LIVE privada antes de transmitir publicamente e mantenha supervisão.

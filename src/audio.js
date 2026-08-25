@@ -1,0 +1,10 @@
+let ctx; let musicTimer; let enabled = false;
+const context = () => ctx ||= new (window.AudioContext || window.webkitAudioContext)();
+export function unlockAudio() { enabled = true; context().resume(); }
+export function sfx(kind) {
+  if (!enabled) return; const c = context(); const o = c.createOscillator(); const g = c.createGain(); o.connect(g).connect(c.destination);
+  const map = { shot: [520, .07, 'square'], hit: [110, .09, 'sawtooth'], shield: [760, .18, 'sine'], grenade: [80, .35, 'sawtooth'], airstrike: [55, .55, 'square'], meteor: [42, .8, 'sawtooth'], join: [440, .16, 'sine'], win: [660, .7, 'triangle'] };
+  const [freq, duration, type] = map[kind] || map.shot; o.type = type; o.frequency.setValueAtTime(freq, c.currentTime); o.frequency.exponentialRampToValueAtTime(Math.max(30, freq / 2), c.currentTime + duration); g.gain.setValueAtTime(.12, c.currentTime); g.gain.exponentialRampToValueAtTime(.001, c.currentTime + duration); o.start(); o.stop(c.currentTime + duration);
+}
+export function setMusic(on) { if (!on) { clearInterval(musicTimer); musicTimer = null; return; } if (musicTimer) return; let step = 0; musicTimer = setInterval(() => { if (!enabled) return; const c = context(), o = c.createOscillator(), g = c.createGain(); o.type = 'triangle'; o.frequency.value = [55, 55, 65.4, 49][step++ % 4]; o.connect(g).connect(c.destination); g.gain.setValueAtTime(.025, c.currentTime); g.gain.exponentialRampToValueAtTime(.001, c.currentTime + .35); o.start(); o.stop(c.currentTime + .35); }, 420); }
+export function speak(text, mode = 'male') { if (!enabled || !speechSynthesis) return; speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text); u.lang = 'pt-BR'; u.rate = 1.04; u.pitch = mode === 'female' ? 1.1 : .82; const voices = speechSynthesis.getVoices().filter((v) => v.lang.toLowerCase().startsWith('pt')); const hint = mode === 'female' ? /female|francisca|maria|luciana/i : /male|antonio|daniel|felipe/i; u.voice = voices.find((v) => hint.test(v.name)) || voices[mode === 'female' ? 0 : voices.length - 1]; speechSynthesis.speak(u); }
