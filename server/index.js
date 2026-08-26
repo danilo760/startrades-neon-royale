@@ -6,7 +6,7 @@ import { TikTokLive } from 'tiktok-live-api';
 import { authorizeAdminRequest, sanitizedAdminLog } from './admin.js';
 import { GiftEventLedger, resolveGiftDefinition, sanitizeDisplayName, sanitizeNarrationName } from './gifts.js';
 import { addBots, applyComment, applyGiftEffect, drainEngineEvents, finish, likes, pause, reset, setStorm, spawnBoss, start, state, tickGame, tickStorm, updateSettings } from './engine.js';
-import { eventBus } from './event-bus.js';
+import { ENGINE_EVENT_CHANNEL, eventBus, publishEngineEvent } from './event-bus.js';
 import { initializeLeaderboard } from './leaderboard.js';
 
 const cfg = {
@@ -91,12 +91,12 @@ function narrateEngineEvent(event) {
   else if (event.type === 'boss:defeated') queueNarration('A arena derrubou o COLOSSUS NEON em cooperação total.', { priority: 5, emotion: 'victory', ttlMs: 8000 });
   else if (event.type === 'boss:escaped') queueNarration('COLOSSUS NEON escapou antes de ser derrotado.', { priority: 4, emotion: 'urgent', ttlMs: 5000 });
 }
+
+eventBus.on(ENGINE_EVENT_CHANNEL, (event) => emit(event.type, event.payload));
+eventBus.on(ENGINE_EVENT_CHANNEL, narrateEngineEvent);
+
 function flushEngineEvents() {
-  for (const event of drainEngineEvents()) {
-    emit(event.type, event.payload);
-    narrateEngineEvent(event);
-    eventBus.emit(event.type, event.payload);
-  }
+  for (const event of drainEngineEvents()) publishEngineEvent(event.type, event.payload, event.at);
 }
 
 function chat(event) {
