@@ -61,7 +61,7 @@ test('automatic intermission preserves a pending gift inbox until the next round
   assert.equal(pending.status, 'pending'); assert.equal(__test.pendingGifts.get('outside').length, 1);
   finish({ now: 2000, intermissionMs: 100 }); tickGame(2100);
   assert.equal(state.phase, 'lobby'); assert.equal(__test.pendingGifts.get('outside').length, 1);
-  join('Outside', null, false, { platformUserId: 'outside' }); startNow();
+  join('Outside', null, false, { platformUserId: 'outside' }); start({ now: 2200, countdownMs: 0 });
   assert.equal(__test.pendingGifts.has('outside'), false); assert.equal(state.players.find((p) => p.id === 'outside').speedMultiplier, 1.2);
 });
 
