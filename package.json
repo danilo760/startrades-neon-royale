@@ -7,7 +7,8 @@
     "dev": "concurrently -k \"node --watch server/index.js\" \"vite --host 0.0.0.0\"",
     "build": "vite build",
     "start": "node server/index.js",
-    "check": "node --check server/index.js && node --check server/engine.js && vite build"
+    "test": "node --test server/*.test.js",
+    "check": "node --check server/index.js && node --check server/engine.js && node --check server/leaderboard.js && npm test && vite build"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.0.2",
@@ -20,6 +21,5 @@
     "tiktok-live-api": "^1.4.9",
     "vite": "^7.1.3",
     "ws": "^8.18.3"
-  },
-  "scripts_note": "Use npm run dev for development or npm run build then npm start for LIVE Studio"
+  }
 }

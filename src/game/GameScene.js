@@ -52,7 +52,8 @@ export class GameScene extends Phaser.Scene {
     if (!this.sys?.isActive()) { this.pendingState = state; return; }
     this.state = state;
     (state.players || []).forEach((p) => this.ensureFighter(p));
-    for (const [id, f] of this.fighters) if (!(state.players || []).some((p) => p.id === id)) { f.container.destroy(); this.fighters.delete(id); }
+    const activeIds = new Set((state.players || []).map((p) => p.id));
+    for (const [id, f] of this.fighters) if (!activeIds.has(id)) { f.container.destroy(); this.fighters.delete(id); }
     this.drawStorm(state.storm || 0);
   }
   ensureFighter(p) {
@@ -60,15 +61,21 @@ export class GameScene extends Phaser.Scene {
     if (!f) {
       const shadow = this.add.ellipse(0, 19, 58, 20, 0x000000, .5);
       const glow = this.add.circle(0, 9, 31, [0x2cefff, 0xff36d7, 0x75ff4d, 0xff8a2b][p.skin], .13).setStrokeStyle(1, [0x2cefff, 0xff36d7, 0x75ff4d, 0xff8a2b][p.skin], .45);
+      const teamAura = this.add.circle(0, 8, 37, 0x35eaff, .08).setStrokeStyle(3, 0x35eaff, .9).setVisible(false);
       const sprite = this.add.sprite(0, 0, 'fighters', p.skin * 4).setScale(.25).setOrigin(.5, .72);
+      const crown = this.add.text(0, -78, '👑', { fontSize: '25px' }).setOrigin(.5).setVisible(false);
       const name = this.add.text(0, -52, `@${p.id}`, { fontFamily: 'Arial', fontSize: '13px', fontStyle: 'bold', color: '#ffffff', stroke: '#05030c', strokeThickness: 5 }).setOrigin(.5);
       const hpBg = this.add.rectangle(0, -34, 68, 8, 0x160f24).setStrokeStyle(1, 0xffffff, .12); const hp = this.add.rectangle(-34, -34, 68, 6, 0x75ff4d).setOrigin(0, .5); const shield = this.add.rectangle(-34, -25, 0, 4, 0x2cefff).setOrigin(0, .5);
-      const container = this.add.container(p.x, p.y, [shadow, glow, sprite, name, hpBg, hp, shield]).setDepth(p.y).setScale(.15).setAlpha(0);
-      f = { container, sprite, glow, hp, shield, data: p, nextShot: 0, wanderAt: 0, wasAlive: true }; this.fighters.set(p.id, f);
+      const container = this.add.container(p.x, p.y, [shadow, glow, teamAura, sprite, crown, name, hpBg, hp, shield]).setDepth(p.y).setScale(.15).setAlpha(0);
+      f = { container, sprite, glow, teamAura, crown, hp, shield, data: p, nextShot: 0, wanderAt: 0, wasAlive: true }; this.fighters.set(p.id, f);
+      this.tweens.add({ targets: crown, y: -85, duration: 700, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
       this.tweens.add({ targets: container, scale: 1, alpha: 1, duration: 520, ease: 'Back.easeOut' }); this.radialBurst(p.x, p.y, [0x2cefff, 0xff36d7, 0x75ff4d, 0xff8a2b][p.skin], 12, 55); sfx('join');
     }
     if (f.wasAlive && !p.alive) this.eliminationEffect(f);
+    const teamColor = p.team === 'red' ? 0xff334e : 0x35eaff;
     f.data = p; f.wasAlive = p.alive; f.hp.width = 68 * p.hp / 100; f.shield.width = 68 * p.shield / 100;
+    f.teamAura.setFillStyle(teamColor, .08).setStrokeStyle(3, teamColor, .9).setVisible(Boolean(this.state?.settings?.teamMode && p.alive));
+    f.crown.setVisible(Boolean(p.alive && this.state?.bountyTargetId === p.id));
     if (p.alive) f.container.setAlpha(1); return f;
   }
   drawStorm(value) {
@@ -101,7 +108,7 @@ export class GameScene extends Phaser.Scene {
     this.cameras.main.flash(power.kind === 'meteor' ? 280 : 90, (power.color >> 16) & 255, (power.color >> 8) & 255, power.color & 255, false, undefined, .12);
     if (power.kind === 'shield') { this.burst(f.container.x, f.container.y, power.color, { quantity: 22, speed: 110, scale: .5, lifespan: 650, ring: true }); this.shieldEffect(f, power); return; }
     if (power.kind === 'supply') { this.supplyEffect(f, power); return; }
-    const targets = [...this.fighters.values()].filter((t) => t.data.alive && t.data.id !== event.playerId).sort((a, b) => Phaser.Math.Distance.Between(f.container.x, f.container.y, a.container.x, a.container.y) - Phaser.Math.Distance.Between(f.container.x, f.container.y, b.container.x, b.container.y));
+    const targets = [...this.fighters.values()].filter((t) => t.data.alive && t.data.id !== event.playerId && (!this.state?.settings?.teamMode || t.data.team !== f.data.team)).sort((a, b) => Phaser.Math.Distance.Squared(f.container.x, f.container.y, a.container.x, a.container.y) - Phaser.Math.Distance.Squared(f.container.x, f.container.y, b.container.x, b.container.y));
     if (power.kind === 'drone') { if (targets[0]) this.droneEffect(f, targets[0], power); return; }
     const count = ['meteor', 'airstrike'].includes(power.kind) ? 5 : 1; targets.slice(0, count).forEach((t, i) => this.fire(f, t, power, i)); sfx(power.sound || power.kind);
   }
@@ -176,8 +183,13 @@ export class GameScene extends Phaser.Scene {
       if (time > f.wanderAt) { f.data.targetX = Phaser.Math.Between(90, 1190); f.data.targetY = Phaser.Math.Between(90, 630); f.wanderAt = time + Phaser.Math.Between(1600, 3500); }
       const angle = Phaser.Math.Angle.Between(f.container.x, f.container.y, f.data.targetX, f.data.targetY), dist = Phaser.Math.Distance.Between(f.container.x, f.container.y, f.data.targetX, f.data.targetY);
       if (dist > 12) { f.container.x += Math.cos(angle) * delta * .038; f.container.y += Math.sin(angle) * delta * .038; f.container.setDepth(f.container.y); f.sprite.y = Math.sin(time / 90) * 3; f.glow.alpha = .12 + Math.sin(time / 180) * .04; const dx = Math.cos(angle), dy = Math.sin(angle); f.sprite.setFrame(f.data.skin * 4 + (Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 1 : 2) : (dy < 0 ? 3 : 0))); }
-      const target = alive.filter((x) => x !== f).sort((a, b) => Phaser.Math.Distance.Between(f.container.x, f.container.y, a.container.x, a.container.y) - Phaser.Math.Distance.Between(f.container.x, f.container.y, b.container.x, b.container.y))[0];
-      if (target && time > f.nextShot && Phaser.Math.Distance.Between(f.container.x, f.container.y, target.container.x, target.container.y) < 260) { f.nextShot = time + Phaser.Math.Between(1400, 2400); this.fire(f, target, { kind: 'shot', damage: 4, color: 0x2cefff }); sfx('shot'); }
+      let target = null, nearestSquared = Infinity;
+      for (const candidate of alive) {
+        if (candidate === f || (this.state.settings?.teamMode && candidate.data.team === f.data.team)) continue;
+        const distanceSquared = Phaser.Math.Distance.Squared(f.container.x, f.container.y, candidate.container.x, candidate.container.y);
+        if (distanceSquared < nearestSquared) { target = candidate; nearestSquared = distanceSquared; }
+      }
+      if (target && time > f.nextShot && nearestSquared < 67600) { f.nextShot = time + Phaser.Math.Between(1400, 2400); this.fire(f, target, { kind: 'shot', damage: 4, color: 0x2cefff }); sfx('shot'); }
     });
     if (time - this.lastSync > 1500) { this.lastSync = time; this.bridge.positions(alive.map((f) => ({ id: f.data.id, x: f.container.x, y: f.container.y, targetX: f.data.targetX, targetY: f.data.targetY }))); }
     if (time - this.lastStormHit > 1000 && (this.state.storm || 0) >= 15) {

@@ -1,3 +1,5 @@
+import { getLeaderboardTop, recordRound } from './leaderboard.js';
+
 const players = new Map();
 const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
 const clean = (v = 'fighter') => String(v).replace(/^@/, '').replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 24) || 'fighter';
@@ -25,29 +27,44 @@ export const POWER_CATALOG = [
 
 export const state = {
   phase: 'lobby', round: 1, storm: 0, likes: 0, players: [], feed: [], winner: null,
+  bountyTargetId: null, bountyClaimedBy: null, teamScores: { blue: { score: 0, survivors: 0, eliminations: 0 }, red: { score: 0, survivors: 0, eliminations: 0 } },
   powerCatalog: POWER_CATALOG,
-  settings: { agentEnabled: true, voiceMode: 'male', voiceIntensity: 3, narratorStyle: 'explosive', music: true, sound: true, giftMapping: { ...DEFAULT_GIFT_MAPPING } },
+  settings: { agentEnabled: true, teamMode: false, voiceMode: 'male', voiceIntensity: 3, narratorStyle: 'explosive', music: true, sound: true, giftMapping: { ...DEFAULT_GIFT_MAPPING } },
 };
+
+let roundRecorded = false;
 
 const feed = (text, tone = 'info') => {
   state.feed.unshift({ id: `${Date.now()}-${Math.random()}`, text, tone, at: Date.now() });
   state.feed = state.feed.slice(0, 14);
 };
-const sync = () => { state.players = [...players.values()].sort((a, b) => Number(b.alive) - Number(a.alive) || b.score - a.score); };
+const teamStats = (team) => [...players.values()].filter((p) => p.team === team).reduce((total, p) => ({ score: total.score + p.score, survivors: total.survivors + Number(p.alive), eliminations: total.eliminations + p.eliminations }), { score: 0, survivors: 0, eliminations: 0 });
+const sync = () => {
+  state.players = [...players.values()].sort((a, b) => Number(b.alive) - Number(a.alive) || b.score - a.score);
+  state.teamScores = { blue: teamStats('blue'), red: teamStats('red') };
+};
 const spawnPoint = () => ({ x: 130 + Math.random() * 1020, y: 115 + Math.random() * 480 });
+const normalizeTeam = (choice) => ['azul', 'blue'].includes(String(choice || '').toLowerCase()) ? 'blue' : ['vermelho', 'red'].includes(String(choice || '').toLowerCase()) ? 'red' : null;
+const balancedTeam = () => teamStats('blue').survivors <= teamStats('red').survivors ? 'blue' : 'red';
 
-export function join(username, bot = false) {
+export function join(username, teamChoice = null, bot = false) {
   const id = clean(username);
   if (!players.has(id)) {
     const pos = spawnPoint();
-    players.set(id, { id, ...pos, targetX: pos.x, targetY: pos.y, hp: 100, shield: 0, energy: 0, score: 0, eliminations: 0, alive: true, skin: players.size % 4, bot });
+    players.set(id, { id, ...pos, targetX: pos.x, targetY: pos.y, hp: 100, shield: 0, energy: 0, score: 0, eliminations: 0, alive: true, skin: players.size % 4, team: normalizeTeam(teamChoice) || balancedTeam(), bot });
     feed(`@${id} aterrissou na arena`, 'join');
   }
   sync(); return players.get(id);
 }
 
-export function addBots(names = []) { names.slice(0, 30).forEach((n) => join(n, true)); return state; }
-export function start() { state.phase = 'running'; state.winner = null; feed(`RODADA ${state.round} INICIADA`, 'system'); return state; }
+export function addBots(names = []) { names.slice(0, 30).forEach((n) => join(n, null, true)); return state; }
+export function start() {
+  const leader = getLeaderboardTop();
+  state.phase = 'running'; state.winner = null; state.bountyTargetId = leader?.id || null; state.bountyClaimedBy = null; roundRecorded = false;
+  feed(`RODADA ${state.round} INICIADA`, 'system');
+  if (state.bountyTargetId) feed(`CAÇADA ATIVA: @${state.bountyTargetId} vale pontuação tripla`, 'bounty');
+  sync(); return state;
+}
 export function pause() { state.phase = state.phase === 'paused' ? 'running' : 'paused'; feed(state.phase === 'paused' ? 'Batalha pausada' : 'Batalha retomada', 'system'); return state; }
 export function setStorm(value) { state.storm = clamp(Number(value) || 0, 0, 100); feed(`Tempestade em ${state.storm}%`, 'storm'); return state; }
 export function updateSettings(next = {}) {
@@ -84,7 +101,8 @@ export function applyGift({ username, giftName = 'Presente', diamondCount = 1, r
 
 export function applyComment({ username, comment = '' }) {
   const cmd = String(comment).trim().toLowerCase();
-  if (['!entrar', '!join'].includes(cmd)) return { kind: 'join', player: join(username) };
+  const joinCommand = cmd.match(/^!(?:entrar|join)(?:\s+(azul|blue|vermelho|red))?$/);
+  if (joinCommand) return { kind: 'join', player: join(username, joinCommand[1] || null) };
   const p = players.get(clean(username));
   if (!p || !p.alive || state.phase !== 'running') return { kind: 'chat' };
   if (cmd === '!esquerda') p.targetX = clamp(p.x - 180, 70, 1210);
@@ -97,11 +115,19 @@ export function applyComment({ username, comment = '' }) {
 
 export function applyCombatResult({ attackerId, targetId, damage, targetHp, targetShield, eliminated }) {
   const attacker = players.get(attackerId); const target = players.get(targetId);
-  if (!attacker || !target) return;
+  if (!attacker || !target || !attacker.alive || !target.alive || attacker.id === target.id) return { applied: false, reason: 'invalid-combatants' };
+  if (state.settings.teamMode && attacker.team === target.team) return { applied: false, reason: 'friendly-fire' };
   target.hp = clamp(targetHp, 0, 100); target.shield = clamp(targetShield, 0, 100);
-  attacker.score += Math.max(1, Math.round(damage));
-  if (eliminated && target.alive) { target.alive = false; attacker.eliminations++; feed(`@${attacker.id} eliminou @${target.id}`, 'elimination'); }
+  const basePoints = Math.max(1, Math.round(Number(damage) || 0));
+  const bountyClaimed = Boolean(eliminated && target.id === state.bountyTargetId);
+  attacker.score += basePoints * (bountyClaimed ? 3 : 1);
+  if (eliminated) {
+    target.alive = false; attacker.eliminations++;
+    feed(`@${attacker.id} eliminou @${target.id}`, 'elimination');
+    if (bountyClaimed) { state.bountyClaimedBy = attacker.id; state.bountyTargetId = null; feed(`@${attacker.id} conquistou a CAÇADA TRIPLA`, 'bounty'); }
+  }
   sync();
+  return { applied: true, eliminated: Boolean(eliminated), bountyClaimed, attackerId: attacker.id, targetId: target.id, pointsAwarded: basePoints * (bountyClaimed ? 3 : 1) };
 }
 
 export function applyStormDamage(targetId, damage = 4) {
@@ -114,5 +140,25 @@ export function applyStormDamage(targetId, damage = 4) {
 export function positions(next = []) { next.forEach(({ id, x, y, targetX, targetY }) => { const p = players.get(id); if (p) Object.assign(p, { x, y, targetX, targetY }); }); sync(); }
 export function likes(count = 1) { state.likes += Number(count) || 1; if (state.likes >= 500) { state.likes -= 500; state.storm = clamp(state.storm - 12, 0, 100); feed('500 curtidas repeliram a tempestade!', 'like'); return true; } return false; }
 export function tickStorm() { if (state.phase === 'running') state.storm = clamp(state.storm + 1, 0, 100); }
-export function finish() { state.phase = 'ended'; const winner = [...players.values()].filter((p) => p.alive).sort((a, b) => b.hp - a.hp || b.score - a.score)[0] || [...players.values()].sort((a, b) => b.score - a.score)[0] || null; state.winner = winner ? { ...winner } : null; feed(winner ? `@${winner.id} É O CAMPEÃO!` : 'Rodada sem vencedor', 'winner'); return state.winner; }
-export function reset() { players.clear(); Object.assign(state, { phase: 'lobby', round: state.round + 1, storm: 0, likes: 0, players: [], feed: [], winner: null }); return state; }
+export function finish() {
+  state.phase = 'ended'; sync();
+  if (state.settings.teamMode && players.size > 0) {
+    const blue = { type: 'team', team: 'blue', label: 'TIME AZUL', ...state.teamScores.blue };
+    const red = { type: 'team', team: 'red', label: 'TIME VERMELHO', ...state.teamScores.red };
+    const comparison = blue.survivors - red.survivors || blue.score - red.score || blue.eliminations - red.eliminations;
+    state.winner = comparison === 0 ? { type: 'team', team: 'draw', label: 'EMPATE', score: blue.score, survivors: blue.survivors, eliminations: blue.eliminations } : comparison > 0 ? blue : red;
+    feed(`${state.winner.label} VENCEU A RODADA!`, 'winner');
+  } else if (!state.settings.teamMode) {
+    const winner = [...players.values()].filter((p) => p.alive).sort((a, b) => b.hp - a.hp || b.score - a.score)[0] || [...players.values()].sort((a, b) => b.score - a.score)[0] || null;
+    state.winner = winner ? { ...winner, type: 'player' } : null;
+    feed(winner ? `@${winner.id} É O CAMPEÃO!` : 'Rodada sem vencedor', 'winner');
+  } else {
+    state.winner = null; feed('Rodada sem vencedor', 'winner');
+  }
+  if (!roundRecorded) {
+    recordRound([...players.values()].map((p) => ({ ...p, roundWinner: state.winner?.type === 'player' ? state.winner.id === p.id : state.winner?.team === p.team })));
+    roundRecorded = true;
+  }
+  return state.winner;
+}
+export function reset() { players.clear(); roundRecorded = false; Object.assign(state, { phase: 'lobby', round: state.round + 1, storm: 0, likes: 0, players: [], feed: [], winner: null, bountyTargetId: null, bountyClaimedBy: null, teamScores: { blue: { score: 0, survivors: 0, eliminations: 0 }, red: { score: 0, survivors: 0, eliminations: 0 } } }); return state; }
