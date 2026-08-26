@@ -1,95 +1,91 @@
 import React, { useEffect, useMemo, useState } from 'react';
 
-const post = async (url, body = {}) => {
-  const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  if (!response.ok) throw new Error(`Falha ${response.status}`); return response.json();
+const post = async (url, body = {}, token = '') => {
+  const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Falha ${response.status}`);
+  return data;
 };
-const colorHex = (value = 0x75ff4d) => `#${Number(value).toString(16).padStart(6, '0')}`;
-const range = (power) => power.max === null ? `${power.min}+` : power.min === power.max ? String(power.min) : `${power.min}–${power.max}`;
+const giftLabel = (gift) => `${gift.aliases?.[0] || gift.giftId} · ${gift.tier} · ${gift.effect}`;
 
 export function Control() {
-  const [s, setS] = useState({ players: [], settings: {}, powerCatalog: [] });
+  const [s, setS] = useState({ players: [], settings: {}, giftCatalog: [], boss: { active: false } });
+  const [config, setConfig] = useState({ mock: true, adminConfigured: false });
+  const [token, setToken] = useState(() => sessionStorage.getItem('neon-admin-token') || '');
   const [names, setNames] = useState('Nebula\nCyberFox\nLimeGuard\nBlaze\nNovaX\nSpectra');
-  const [gift, setGift] = useState({ username: 'Nebula', giftName: 'Rosa', diamondCount: 1, repeatCount: 1 });
-  const [newGift, setNewGift] = useState({ name: '', kind: 'shot', sound: '' });
-  const [connected, setConnected] = useState(false), [notice, setNotice] = useState('Pronto para comandar a arena'), [mapPending, setMapPending] = useState(false);
+  const [selectedPlayerId, setSelectedPlayerId] = useState('');
+  const [selectedGiftId, setSelectedGiftId] = useState('5655');
+  const [connected, setConnected] = useState(false), [notice, setNotice] = useState('Digite o token administrativo para operar o painel'), [mapPending, setMapPending] = useState(false), [clock, setClock] = useState(Date.now());
+
   useEffect(() => {
+    fetch('/api/config').then((r) => r.json()).then((data) => { setConfig(data); if (data.giftCatalog?.length) setS((prev) => ({ ...prev, giftCatalog: data.giftCatalog })); }).catch(() => setNotice('Não foi possível ler a configuração do servidor'));
+    const timer = setInterval(() => setClock(Date.now()), 1000);
     let ws, retry, active = true;
     const connect = () => {
       ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/events`);
       ws.onopen = () => setConnected(true); ws.onclose = () => { setConnected(false); if (active) retry = setTimeout(connect, 1800); };
       ws.onmessage = ({ data }) => { const event = JSON.parse(data); if (event.state) setS({ ...event.state }); };
     };
-    connect(); return () => { active = false; clearTimeout(retry); ws?.close(); };
+    connect(); return () => { active = false; clearInterval(timer); clearTimeout(retry); ws?.close(); };
   }, []);
-  const run = async (url, body, message = 'Comando enviado') => {
-    try { const result = await post(url, body); setS({ ...result.state }); setNotice(message); return result; }
-    catch (error) { setNotice(`Erro: ${error.message}`); }
+
+  const alive = useMemo(() => s.players.filter((p) => p.alive), [s.players]);
+  useEffect(() => { if (!alive.some((p) => p.id === selectedPlayerId)) setSelectedPlayerId(alive[0]?.id || ''); }, [alive, selectedPlayerId]);
+  useEffect(() => { if (s.giftCatalog?.length && !s.giftCatalog.some((g) => String(g.giftId) === String(selectedGiftId))) setSelectedGiftId(String(s.giftCatalog[0].giftId)); }, [s.giftCatalog, selectedGiftId]);
+
+  const saveToken = (value) => { setToken(value); sessionStorage.setItem('neon-admin-token', value); };
+  const run = async (url, body = {}, message = 'Comando enviado') => {
+    try { const result = await post(url, body, token); if (result.state) setS({ ...result.state }); setNotice(message); return result; }
+    catch (error) { setNotice(`Erro: ${error.message}`); return null; }
   };
-  const testPower = (power) => {
-    const next = { ...gift, giftName: power.giftExample, diamondCount: power.sample, repeatCount: 1 };
-    setGift(next); run('/api/mock/gift', next, `${power.label} ativado para @${next.username}`);
-  };
-  const giftMapping = s.settings.giftMapping || {};
-  const addMapping = () => {
-    const name = newGift.name.trim(); if (!name) return;
-    run('/api/settings', { giftMapping: { [name]: { kind: newGift.kind, ...(newGift.sound ? { sound: newGift.sound } : {}) } } }, `Presente ${name} configurado`);
-    setNewGift({ name: '', kind: 'shot', sound: '' });
-  };
-  const simulateMapping = (name) => run('/api/mock/gift', { username: gift.username || 'Nebula', giftName: name, diamondCount: 1, repeatCount: 1 }, `${name} simulado`);
-  const removeMapping = (name) => run('/api/settings', { removeGift: name }, `Mapeamento ${name} removido`);
   const changeMap = async (arenaBackground) => { setMapPending(true); try { await run('/api/settings', { arenaBackground }, `Mapa ${arenaBackground} ativado`); } finally { setMapPending(false); } };
-  const alive = s.players.filter((p) => p.alive), catalog = s.powerCatalog || [];
-  const selectedPower = useMemo(() => catalog.find((p) => gift.diamondCount * gift.repeatCount >= p.min && (p.max === null || gift.diamondCount * gift.repeatCount <= p.max)), [catalog, gift]);
+  const simulateGift = () => selectedPlayerId && selectedGiftId && run('/api/admin/gift', { targetPlayerId: selectedPlayerId, giftId: selectedGiftId }, 'Gift simulado em MODO DE TESTE');
+  const invokeBoss = () => run('/api/admin/boss', {}, 'Pedido de Colossus Neon enviado');
+  const boss = s.boss || { active: false }, bossCooldownMs = Math.max(0, (s.bossCooldownUntil || boss.cooldownUntil || 0) - clock);
+  const bossStatus = boss.active ? `${Math.ceil(boss.hp || 0)} / ${boss.maxHp || 0} HP` : bossCooldownMs > 0 ? `Cooldown ${Math.ceil(bossCooldownMs / 1000)}s` : 'Disponível';
 
   return <main className="control">
     <header className="controlHeader">
       <div className="brand"><span className="brandMark">S</span><div><small>LIVE OPERATIONS</small><h1>STARTRADES COMMAND</h1></div></div>
       <div className="headerActions"><span className={`connection ${connected ? 'online' : ''}`}><i/>{connected ? 'SERVIDOR ONLINE' : 'RECONECTANDO'}</span><a href="/" target="_blank" rel="noreferrer">ABRIR ARENA ↗</a></div>
     </header>
+
     <div className="notice"><span>STATUS</span>{notice}</div>
     <section className="stats">
       <div><span>ESTADO</span><b className={s.phase}>{s.phase || 'lobby'}</b><em>controle da partida</em></div>
       <div><span>COMBATENTES VIVOS</span><b>{alive.length}<small> / {s.players.length}</small></b><em>na arena agora</em></div>
       <div><span>RODADA</span><b>#{s.round || 1}</b><em>sessão atual</em></div>
-      <div><span>TEMPESTADE</span><b>{s.storm || 0}%</b><em>fechamento da zona</em></div>
+      <div><span>COLOSSUS</span><b>{boss.active ? 'ATIVO' : 'INATIVO'}</b><em>{bossStatus}</em></div>
     </section>
 
     <section className="commandGrid">
-      <article className="commandCard battleCard"><div className="cardTitle"><span>01</span><div><h2>Controle da batalha</h2><p>Comandos principais da rodada</p></div></div>
-        <div className="battleButtons"><button className="primary" onClick={() => run('/api/battle/start', {}, 'Batalha iniciada')}>▶ INICIAR</button><button onClick={() => run('/api/battle/pause', {}, 'Estado da pausa alterado')}>Ⅱ PAUSAR / RETOMAR</button><button className="danger" onClick={() => run('/api/battle/end', {}, 'Batalha encerrada e campeão anunciado')}>■ ENCERRAR</button><button className="ghost" onClick={() => confirm('Zerar jogadores e iniciar uma nova rodada?') && run('/api/battle/reset', {}, 'Nova rodada preparada')}>↻ ZERAR RODADA</button></div>
-        <div className="battleMode"><label className="toggle"><span><b>Modo de Times</b><em>Azul vs Vermelho • fogo amigo bloqueado</em></span><input type="checkbox" checked={s.settings.teamMode ?? false} onChange={(e) => run('/api/settings', { teamMode: e.target.checked }, e.target.checked ? 'Modo de Times ativado' : 'Modo individual ativado')}/></label><label className="mapSelector"><span>MAPA DA ARENA</span><select value={s.settings.arenaBackground || 'default'} disabled={mapPending} onChange={(e) => changeMap(e.target.value)}><option value="default">Neon padrão</option><option value="cyberpunk">Cyberpunk</option><option value="space">Espaço</option><option value="retro">Retrô</option></select></label><div className="bountyStatus"><span>ALVO BOUNTY</span><b>{s.bountyTargetId ? `👑 @${s.bountyTargetId}` : 'SEM ALVO NESTA RODADA'}</b></div></div>
+      <article className="commandCard battleCard"><div className="cardTitle"><span>01</span><div><h2>Controle da batalha</h2><p>Comandos administrativos autenticados</p></div></div>
+        <div className="formGrid"><label>Token administrativo<input type="password" autoComplete="off" value={token} placeholder={config.adminConfigured ? 'ADMIN_TOKEN configurado no servidor' : 'ADMIN_TOKEN ausente no servidor'} onChange={(e) => saveToken(e.target.value)}/></label></div>
+        {!config.adminConfigured && <p><strong>PAINEL BLOQUEADO:</strong> configure ADMIN_TOKEN no servidor antes de usar comandos.</p>}
+        <div className="battleButtons"><button className="primary" onClick={() => run('/api/battle/start', {}, 'Batalha iniciada')}>▶ INICIAR</button><button onClick={() => run('/api/battle/pause', {}, 'Estado da pausa alterado')}>Ⅱ PAUSAR / RETOMAR</button><button className="danger" onClick={() => run('/api/battle/end', {}, 'Batalha encerrada')}>■ ENCERRAR</button><button className="ghost" onClick={() => confirm('Zerar jogadores e iniciar uma nova rodada?') && run('/api/battle/reset', {}, 'Nova rodada preparada')}>↻ ZERAR RODADA</button></div>
+        <div className="battleMode"><label className="toggle"><span><b>Modo de Times</b><em>Azul vs Vermelho • fogo amigo bloqueado</em></span><input type="checkbox" checked={s.settings?.teamMode ?? false} onChange={(e) => run('/api/settings', { teamMode: e.target.checked }, e.target.checked ? 'Modo de Times ativado' : 'Modo individual ativado')}/></label><label className="mapSelector"><span>MAPA DA ARENA</span><select value={s.settings?.arenaBackground || 'default'} disabled={mapPending} onChange={(e) => changeMap(e.target.value)}><option value="default">Neon padrão</option><option value="cyberpunk">Cyberpunk</option><option value="space">Espaço</option><option value="retro">Retrô</option></select></label><div className="bountyStatus"><span>ALVO BOUNTY</span><b>{s.bountyTargetId ? `👑 ${s.players.find((p) => p.id === s.bountyTargetId)?.username || s.bountyTargetId}` : 'SEM ALVO NESTA RODADA'}</b></div></div>
       </article>
-      <article className="commandCard"><div className="cardTitle"><span>02</span><div><h2>Jogadores de teste</h2><p>Um nome por linha</p></div></div><textarea value={names} onChange={(e) => setNames(e.target.value)} rows="6"/><button className="primary full" onClick={() => run('/api/test/players', { names: names.split(/\n|,/).map((x) => x.trim()).filter(Boolean) }, 'Jogadores adicionados à arena')}>+ ADICIONAR COMBATENTES</button></article>
-      <article className="commandCard"><div className="cardTitle"><span>03</span><div><h2>Tempestade</h2><p>Controle manual da zona</p></div></div><div className="stormValue">{s.storm || 0}<small>%</small></div><input className="stormRange" type="range" min="0" max="100" value={s.storm || 0} onChange={(e) => run('/api/storm', { value: Number(e.target.value) }, `Tempestade ajustada para ${e.target.value}%`)}/><div className="rangeLabels"><span>SEGURA</span><span>CRÍTICA</span></div></article>
-    </section>
 
-    <section className="powerSection">
-      <div className="sectionHeading"><div><small>MAPA DE INTERAÇÕES</small><h2>Presente → Poder na arena</h2><p>O valor total do presente define automaticamente o efeito. Clique em testar durante uma batalha.</p></div><span className="legendBadge">7 PODERES CONFIGURADOS</span></div>
-      <div className="powerGrid">{catalog.map((power, index) => <article className={`powerCard power-${power.kind}`} key={power.id} style={{ '--power': colorHex(power.color) }}>
-        <div className="powerTop"><span className="powerIcon">{power.icon}</span><div><small>NÍVEL {index + 1}</small><h3>{power.label}</h3></div><b>{range(power)}<em>moedas</em></b></div>
-        <p>{power.summary}</p><div className="powerMeta"><span>EXEMPLO: {power.giftExample}</span><strong>{power.damage ? `${power.damage} DANO` : power.heal ? `+${power.heal} VIDA` : `+${power.shield} ESCUDO`}</strong></div>
-        <button onClick={() => testPower(power)}>TESTAR {power.icon}</button>
-      </article>)}</div>
+      <article className="commandCard"><div className="cardTitle"><span>02</span><div><h2>Jogadores de teste</h2><p>Disponível somente em MOCK_MODE</p></div></div><textarea value={names} onChange={(e) => setNames(e.target.value)} rows="6"/><button className="primary full" disabled={!config.mock} onClick={() => run('/api/test/players', { names: names.split(/\n|,/).map((x) => x.trim()).filter(Boolean) }, 'Jogadores adicionados à arena')}>+ ADICIONAR COMBATENTES</button></article>
+
+      <article className="commandCard"><div className="cardTitle"><span>03</span><div><h2>Tempestade</h2><p>Controle manual da zona</p></div></div><div className="stormValue">{s.storm || 0}<small>%</small></div><input className="stormRange" type="range" min="0" max="100" value={s.storm || 0} onChange={(e) => setS((prev) => ({ ...prev, storm: Number(e.target.value) }))} onMouseUp={(e) => run('/api/storm', { value: Number(e.currentTarget.value) }, `Tempestade ajustada para ${e.currentTarget.value}%`)} onTouchEnd={(e) => run('/api/storm', { value: Number(e.currentTarget.value) }, `Tempestade ajustada para ${e.currentTarget.value}%`)}/><div className="rangeLabels"><span>SEGURA</span><span>CRÍTICA</span></div></article>
     </section>
 
     <section className="mappingSection">
-      <div className="sectionHeading"><div><small>CONFIGURAÇÃO DA LIVE</small><h2>Presente específico → poder específico</h2><p>Cadastre o nome exato que aparece no TikTok. O mapeamento tem prioridade sobre a faixa de moedas.</p></div><span className="legendBadge">EDIÇÃO EM TEMPO REAL</span></div>
-      <div className="mappingForm"><label>Nome exibido no TikTok<input value={newGift.name} placeholder="ex: Coroa, Leão, Foguete" onChange={(e) => setNewGift({ ...newGift, name: e.target.value })}/></label><label>Poder ativado<select value={newGift.kind} onChange={(e) => setNewGift({ ...newGift, kind: e.target.value })}>{catalog.map((p) => <option key={p.kind} value={p.kind}>{p.icon} {p.label}</option>)}</select></label><label>Som<select value={newGift.sound} onChange={(e) => setNewGift({ ...newGift, sound: e.target.value })}><option value="">Som do poder</option><option value="laser">Laser</option><option value="shield">Escudo</option><option value="heal">Cura</option><option value="explosion">Explosão</option><option value="airstrike">Ataque aéreo</option></select></label><button className="primary" onClick={addMapping}>SALVAR MAPA</button></div>
-      <div className="mappingList">{Object.keys(giftMapping).length === 0 && <span className="empty">Nenhum mapeamento personalizado. O cálculo por moedas continua ativo.</span>}{Object.entries(giftMapping).map(([name, cfg]) => <div className="mappingRow" key={name}><b>{name}</b><span>{catalog.find((p) => p.kind === cfg.kind)?.icon || '✦'} {catalog.find((p) => p.kind === cfg.kind)?.label || cfg.kind}</span><em>{cfg.sound || 'padrão'}</em><button onClick={() => simulateMapping(name)}>TESTAR</button><button className="remove" onClick={() => removeMapping(name)}>REMOVER</button></div>)}</div>
+      <div className="sectionHeading"><div><small>SIMULADOR ADMINISTRATIVO</small><h2>MODO DE TESTE — TikTok LIVE Gifts</h2><p>O cliente escolhe somente jogador e Gift da allowlist. Força, duração e magnitude são definidas no servidor.</p></div><span className="legendBadge">MODO DE TESTE</span></div>
+      <div className="mappingForm"><label>Jogador por ID<select value={selectedPlayerId} onChange={(e) => setSelectedPlayerId(e.target.value)}>{alive.length ? alive.map((p) => <option key={p.id} value={p.id}>@{p.username || p.id} · ID {p.id}</option>) : <option value="">Nenhum jogador ativo</option>}</select></label><label>Gift allowlisted<select value={selectedGiftId} onChange={(e) => setSelectedGiftId(e.target.value)}>{(s.giftCatalog || []).map((g) => <option key={g.giftId} value={String(g.giftId)}>{giftLabel(g)}</option>)}</select></label><button className="primary" disabled={!config.mock || !selectedPlayerId || !selectedGiftId} onClick={simulateGift}>SIMULAR GIFT</button><button className="primary" disabled={!config.mock || !alive.length} onClick={invokeBoss}>INVOCAR COLOSSUS NEON</button></div>
+      <div className="mappingList"><div className="mappingRow"><b>COLOSSUS NEON</b><span>{boss.active ? `${Math.ceil(boss.hp)} / ${boss.maxHp} HP` : 'INATIVO'}</span><em>{bossStatus}</em><span>{boss.active && boss.expiresAt ? `${Math.max(0, Math.ceil((boss.expiresAt - clock) / 1000))}s restantes` : '45s por invocação'}</span></div></div>
+      <p><strong>SIMULAÇÃO:</strong> esses eventos usam <code>source: control-panel</code> e não representam receita, Gifts reais ou qualquer prêmio de valor econômico.</p>
     </section>
 
     <section className="lowerGrid">
-      <article className="commandCard simulator"><div className="cardTitle"><span>04</span><div><h2>Simulador personalizado</h2><p>Teste qualquer valor e quantidade</p></div></div>
-        <div className="formGrid"><label>Jogador<select value={gift.username} onChange={(e) => setGift({ ...gift, username: e.target.value })}>{s.players.length ? s.players.map((p) => <option key={p.id}>{p.id}</option>) : <option>Nebula</option>}</select></label><label>Nome do presente<input value={gift.giftName} onChange={(e) => setGift({ ...gift, giftName: e.target.value })}/></label><label>Moedas por presente<input min="1" value={gift.diamondCount} type="number" onChange={(e) => setGift({ ...gift, diamondCount: Math.max(1, Number(e.target.value)) })}/></label><label>Quantidade<input min="1" value={gift.repeatCount} type="number" onChange={(e) => setGift({ ...gift, repeatCount: Math.max(1, Number(e.target.value)) })}/></label></div>
-        <div className="powerPreview"><span>{selectedPower?.icon || '✦'}</span><div><small>RESULTADO PREVISTO</small><b>{selectedPower?.label || 'RAJADA ESTELAR'}</b></div><em>{gift.diamondCount * gift.repeatCount} moedas</em></div><button className="primary full" onClick={() => run('/api/mock/gift', gift, `${selectedPower?.label || 'Poder'} simulado`)}>ATIVAR PODER NA ARENA</button>
+      <article className="commandCard narrator"><div className="cardTitle"><span>04</span><div><h2>Apresentador e áudio</h2><p>Personalidade da transmissão</p></div></div>
+        <label className="toggle"><span><b>Apresentador automático</b><em>Fila com prioridade e limite programático de 16 palavras</em></span><input type="checkbox" checked={s.settings?.agentEnabled ?? true} onChange={(e) => run('/api/settings', { agentEnabled: e.target.checked }, 'Apresentador atualizado')}/></label>
+        <div className="formGrid"><label>Voz<select value={s.settings?.voiceMode || 'male'} onChange={(e) => run('/api/settings', { voiceMode: e.target.value }, 'Voz atualizada')}><option value="male">Masculina grave</option><option value="female">Feminina energética</option></select></label><label>Estilo<select value={s.settings?.narratorStyle || 'explosive'} onChange={(e) => run('/api/settings', { narratorStyle: e.target.value }, 'Estilo atualizado')}><option value="explosive">Arena explosiva</option><option value="esports">Caster e-sports</option><option value="cinematic">Trailer cinematográfico</option></select></label><label>Intensidade<select value={s.settings?.voiceIntensity || 3} onChange={(e) => run('/api/settings', { voiceIntensity: Number(e.target.value) }, 'Intensidade atualizada')}><option value="1">1 — Controlada</option><option value="2">2 — Animada</option><option value="3">3 — Emoção máxima</option></select></label></div>
+        <div className="audioToggles"><label className="toggle compact"><span><b>Trilha eletrônica</b></span><input type="checkbox" checked={s.settings?.music ?? true} onChange={(e) => run('/api/settings', { music: e.target.checked }, 'Música atualizada')}/></label><label className="toggle compact"><span><b>Efeitos sonoros</b></span><input type="checkbox" checked={s.settings?.sound ?? true} onChange={(e) => run('/api/settings', { sound: e.target.checked }, 'Efeitos atualizados')}/></label></div>
       </article>
-      <article className="commandCard narrator"><div className="cardTitle"><span>05</span><div><h2>Apresentador e áudio</h2><p>Personalidade da transmissão</p></div></div>
-        <label className="toggle"><span><b>Apresentador automático</b><em>Narra entradas, poderes e eliminações</em></span><input type="checkbox" checked={s.settings.agentEnabled ?? true} onChange={(e) => run('/api/settings', { agentEnabled: e.target.checked }, 'Apresentador atualizado')}/></label>
-        <div className="formGrid"><label>Voz<select value={s.settings.voiceMode || 'male'} onChange={(e) => run('/api/settings', { voiceMode: e.target.value }, 'Voz atualizada')}><option value="male">Masculina grave</option><option value="female">Feminina energética</option></select></label><label>Estilo<select value={s.settings.narratorStyle || 'explosive'} onChange={(e) => run('/api/settings', { narratorStyle: e.target.value }, 'Estilo do narrador atualizado')}><option value="explosive">Arena explosiva</option><option value="esports">Caster e-sports</option><option value="cinematic">Trailer cinematográfico</option></select></label><label>Intensidade<select value={s.settings.voiceIntensity || 3} onChange={(e) => run('/api/settings', { voiceIntensity: Number(e.target.value) }, 'Intensidade da voz atualizada')}><option value="1">1 — Controlada</option><option value="2">2 — Animada</option><option value="3">3 — Emoção máxima</option></select></label></div>
-        <div className="audioToggles"><label className="toggle compact"><span><b>Trilha eletrônica</b></span><input type="checkbox" checked={s.settings.music ?? true} onChange={(e) => run('/api/settings', { music: e.target.checked }, 'Música atualizada')}/></label><label className="toggle compact"><span><b>Efeitos sonoros</b></span><input type="checkbox" checked={s.settings.sound ?? true} onChange={(e) => run('/api/settings', { sound: e.target.checked }, 'Efeitos atualizados')}/></label></div>
-      </article>
-      <article className="commandCard rosterCard"><div className="cardTitle"><span>06</span><div><h2>Combatentes</h2><p>Telemetria em tempo real</p></div></div><div className="roster">{s.players.length ? s.players.map((p, i) => <div key={p.id} className={`${p.alive ? '' : 'dead'} team-${p.team || 'blue'}`}><b><i>{i + 1}</i>{s.bountyTargetId === p.id ? '👑 ' : ''}@{p.id}</b><span>{s.settings.teamMode && <em>{p.team === 'red' ? 'VERMELHO' : 'AZUL'}</em>}<em>{p.hp} HP</em><em>{p.shield} ESC</em><em>{p.eliminations} KO</em></span></div>) : <p className="empty">Nenhum combatente adicionado.</p>}</div></article>
+
+      <article className="commandCard rosterCard"><div className="cardTitle"><span>05</span><div><h2>Combatentes</h2><p>IDs estáveis e telemetria do servidor</p></div></div><div className="roster">{s.players.length ? s.players.map((p, i) => <div key={p.id} className={`${p.alive ? '' : 'dead'} team-${p.team || 'blue'}`}><b><i>{i + 1}</i>{s.bountyTargetId === p.id ? '👑 ' : ''}@{p.username || p.id}</b><span>{s.settings?.teamMode && <em>{p.team === 'red' ? 'VERMELHO' : 'AZUL'}</em>} ID {p.id}</span><strong>{Math.ceil(p.hp || 0)} HP · {Math.ceil(p.shield || 0)} ESC · {p.score || 0} PTS</strong></div>) : <span className="empty">Nenhum combatente na arena.</span>}</div></article>
     </section>
   </main>;
 }

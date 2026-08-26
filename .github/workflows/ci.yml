@@ -12,8 +12,10 @@ jobs:
         with:
           node-version: 20
       - run: npm install
-      - run: npm run check
+      - run: RUN_INTEGRATION_TESTS=true npm run check
       - name: Smoke test production server
+        env:
+          ADMIN_TOKEN: ci-smoke-admin-token
         run: |
           MOCK_MODE=true npm start > /tmp/startrades-server.log 2>&1 &
           SERVER_PID=$!

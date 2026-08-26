@@ -8,7 +8,7 @@
     "build": "vite build",
     "start": "node server/index.js",
     "test": "node --test server/*.test.js",
-    "check": "node --check server/index.js && node --check server/engine.js && node --check server/leaderboard.js && npm test && vite build"
+    "check": "node --check server/index.js && node --check server/engine.js && node --check server/gifts.js && node --check server/admin.js && node --check server/leaderboard.js && npm test && vite build"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.57.4",

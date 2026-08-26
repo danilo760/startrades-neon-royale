@@ -13,3 +13,5 @@ services:
         value: "true"
       - key: TIKTOK_USERNAME
         value: startrades01
+      - key: ADMIN_TOKEN
+        sync: false

@@ -1,152 +1,599 @@
 import { randomUUID } from 'node:crypto';
 import { getLeaderboardTop, recordRound } from './leaderboard.js';
+import { publicGiftCatalog, resolveGiftDefinition, sanitizeDisplayName, sanitizeNarrationName, sanitizeStableId } from './gifts.js';
 
 const players = new Map();
 const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
-const clean = (v = 'fighter') => String(v).replace(/^@/, '').replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 24) || 'fighter';
+const nowMs = () => Date.now();
+const ARENA_W = 1280, ARENA_H = 720;
+const SPAWN_GRACE_MS = 3000;
+const GIFT_IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
+const PENDING_TTL_MS = 10 * 60 * 1000;
+const BASE_ATTACK_DAMAGE = 4;
+const ATTACK_COOLDOWN_MS = 850;
+const MAX_EVENT_LOG = 100;
 
-export const POWER_PRESETS = Object.fromEntries([
-  ['shot', { label: 'RAJADA ESTELAR', damage: 12, radius: 0, color: 0x75ff5b, sound: 'laser' }],
-  ['shield', { label: 'ESCUDO DE ENERGIA', shield: 32, color: 0x35eaff, sound: 'shield' }],
-  ['supply', { label: 'CAIXA DE SUPRIMENTOS', heal: 24, shield: 30, color: 0x5dff70, sound: 'heal' }],
-  ['grenade', { label: 'GRANADA DE PLASMA', damage: 22, radius: 120, color: 0xa14dff, sound: 'explosion' }],
-  ['airstrike', { label: 'ATAQUE AÉREO', damage: 28, radius: 180, color: 0xff334e, sound: 'airstrike' }],
-  ['drone', { label: 'DRONE CAÇADOR', damage: 34, radius: 0, color: 0xff4dff, sound: 'laser' }],
-  ['meteor', { label: 'METEORO LENDÁRIO', damage: 55, radius: 250, color: 0xffa12b, sound: 'explosion' }],
-]);
-const DEFAULT_GIFT_MAPPING = { rosa: { kind: 'shot' }, 'dedo em pistola': { kind: 'shot' }, gg: { kind: 'shield' }, boneca: { kind: 'supply' }, foguete: { kind: 'grenade' }, leão: { kind: 'airstrike' }, drone: { kind: 'drone' }, universo: { kind: 'meteor' } };
 export const ARENA_BACKGROUNDS = ['default', 'cyberpunk', 'space', 'retro'];
+export const POWER_PRESETS = Object.freeze({
+  shot: { label: 'RAJADA ESTELAR', damage: BASE_ATTACK_DAMAGE, color: 0x2cefff, sound: 'shot' },
+});
+export const POWER_CATALOG = [];
 
-export const POWER_CATALOG = [
-  { id: 'blast', min: 1, max: 4, sample: 1, giftExample: 'Rosa', kind: 'shot', icon: '✦', label: 'RAJADA ESTELAR', summary: 'Disparo de energia no adversário mais próximo', damage: 12, color: 0x75ff5b },
-  { id: 'shield', min: 5, max: 9, sample: 5, giftExample: 'Presente de 5 moedas', kind: 'shield', icon: '⬡', label: 'ESCUDO DE ENERGIA', summary: 'Adiciona 32 pontos de proteção', shield: 32, color: 0x35eaff },
-  { id: 'supply', min: 10, max: 29, sample: 10, giftExample: 'Presente de 10 moedas', kind: 'supply', icon: '✚', label: 'CAIXA DE SUPRIMENTOS', summary: 'Recupera vida e reforça o escudo', heal: 24, shield: 30, color: 0x5dff70 },
-  { id: 'grenade', min: 30, max: 99, sample: 30, giftExample: 'Presente de 30 moedas', kind: 'grenade', icon: '◉', label: 'GRANADA DE PLASMA', summary: 'Explosão concentrada de alto impacto', damage: 22, radius: 120, color: 0xa14dff },
-  { id: 'airstrike', min: 100, max: 299, sample: 100, giftExample: 'Presente de 100 moedas', kind: 'airstrike', icon: '⌖', label: 'ATAQUE AÉREO', summary: 'Marca e atinge até cinco combatentes', damage: 28, radius: 180, color: 0xff334e },
-  { id: 'drone', min: 300, max: 999, sample: 300, giftExample: 'Presente de 300 moedas', kind: 'drone', icon: '◆', label: 'DRONE CAÇADOR', summary: 'Persegue o alvo e dispara um laser pesado', damage: 34, color: 0xff4dff },
-  { id: 'meteor', min: 1000, max: null, sample: 1000, giftExample: 'Universo ou 1.000+ moedas', kind: 'meteor', icon: '☄', label: 'METEORO LENDÁRIO', summary: 'Evento cinematográfico com dano devastador', damage: 55, radius: 250, color: 0xffa12b },
-];
+const emptyBoss = () => ({ id: null, active: false, hp: 0, maxHp: 0, x: 640, y: 360, radius: 72, spawnedAt: 0, expiresAt: 0, targetPlayerId: null, lastAttackAt: 0, attack: null, cooldownUntil: 0 });
 
 export const state = {
   phase: 'lobby', round: 1, storm: 0, likes: 0, players: [], feed: [], winner: null,
-  bountyTargetId: null, bountyTargetPlatformId: null, bountyClaimedBy: null, roundId: randomUUID(), teamScores: { blue: { score: 0, survivors: 0, eliminations: 0 }, red: { score: 0, survivors: 0, eliminations: 0 } },
+  bountyTargetId: null, bountyTargetPlatformId: null, bountyClaimedBy: null,
+  roundId: randomUUID(),
+  teamScores: { blue: { score: 0, survivors: 0, eliminations: 0 }, red: { score: 0, survivors: 0, eliminations: 0 } },
   powerCatalog: POWER_CATALOG,
-  settings: { agentEnabled: true, teamMode: false, arenaBackground: 'default', voiceMode: 'male', voiceIntensity: 3, narratorStyle: 'explosive', music: true, sound: true, giftMapping: { ...DEFAULT_GIFT_MAPPING } },
+  giftCatalog: publicGiftCatalog(),
+  hazards: [],
+  boss: emptyBoss(),
+  bossCooldownUntil: 0,
+  settings: {
+    agentEnabled: true,
+    teamMode: false,
+    arenaBackground: 'default',
+    voiceMode: 'male',
+    voiceIntensity: 3,
+    narratorStyle: 'explosive',
+    music: true,
+    sound: true,
+    giftLimits: { perPlayerPerRound: 12, perRound: 120, pendingPerUser: 3, maxComboActivations: 2 },
+  },
 };
 
 let roundRecorded = false;
+let roundGiftCount = 0;
+let bossLastTickAt = nowMs();
+const giftUsage = new Map();
+const giftCooldowns = new Map();
+const processedGiftIds = new Map();
+const pendingGifts = new Map();
+const combatCooldowns = new Map();
+const bossAttackCooldowns = new Map();
+const bossDamage = new Map();
+const engineEvents = [];
 
 const feed = (text, tone = 'info') => {
-  state.feed.unshift({ id: `${Date.now()}-${Math.random()}`, text, tone, at: Date.now() });
+  state.feed.unshift({ id: `${Date.now()}-${Math.random()}`, text: String(text).slice(0, 160), tone, at: Date.now() });
   state.feed = state.feed.slice(0, 14);
 };
+const queueEvent = (type, payload = {}) => {
+  engineEvents.push({ type, payload, at: nowMs() });
+  if (engineEvents.length > MAX_EVENT_LOG) engineEvents.splice(0, engineEvents.length - MAX_EVENT_LOG);
+};
+export function drainEngineEvents() { return engineEvents.splice(0, engineEvents.length); }
+
+const playerHealthRatio = (p) => (p.hp + p.shield) / Math.max(1, p.maxHp || 100);
 const teamStats = (team) => [...players.values()].filter((p) => p.team === team).reduce((total, p) => ({ score: total.score + p.score, survivors: total.survivors + Number(p.alive), eliminations: total.eliminations + p.eliminations }), { score: 0, survivors: 0, eliminations: 0 });
 const sync = () => {
-  state.players = [...players.values()].sort((a, b) => Number(b.alive) - Number(a.alive) || b.score - a.score);
+  state.players = [...players.values()].sort((a, b) => Number(b.alive) - Number(a.alive) || b.score - a.score || a.username.localeCompare(b.username, 'pt-BR'));
   state.teamScores = { blue: teamStats('blue'), red: teamStats('red') };
 };
 const spawnPoint = () => ({ x: 130 + Math.random() * 1020, y: 115 + Math.random() * 480 });
 const normalizeTeam = (choice) => ['azul', 'blue'].includes(String(choice || '').toLowerCase()) ? 'blue' : ['vermelho', 'red'].includes(String(choice || '').toLowerCase()) ? 'red' : null;
 const balancedTeam = () => teamStats('blue').survivors <= teamStats('red').survivors ? 'blue' : 'red';
+const localStableId = (username) => `local:${sanitizeNarrationName(username, 'fighter').toLowerCase()}`.slice(0, 80);
+const normalizePlayerId = (value) => sanitizeStableId(value);
+const findPlayerByPlatformId = (platformUserId) => players.get(normalizePlayerId(platformUserId)) || null;
+const activePlayers = () => [...players.values()].filter((p) => p.alive);
+const getGiftLimits = () => state.settings.giftLimits || {};
+
+function pruneProcessed(now = nowMs()) {
+  for (const [id, expiresAt] of processedGiftIds) if (expiresAt <= now) processedGiftIds.delete(id);
+  for (const [id, list] of pendingGifts) {
+    const live = list.filter((item) => item.expiresAt > now);
+    if (live.length) pendingGifts.set(id, live); else pendingGifts.delete(id);
+  }
+}
+function rememberGiftEvent(eventId, now) {
+  pruneProcessed(now);
+  if (!eventId || processedGiftIds.has(eventId)) return false;
+  processedGiftIds.set(eventId, now + GIFT_IDEMPOTENCY_TTL_MS);
+  return true;
+}
+function giftCooldownKey(playerId, effect) { return `${playerId}:${effect}`; }
+function canUseGift(playerId, gift, now) {
+  const key = giftCooldownKey(playerId, gift.effect);
+  const until = giftCooldowns.get(key) || 0;
+  return { ok: until <= now, cooldownUntil: until, key };
+}
+function setGiftCooldown(key, gift, now) { giftCooldowns.set(key, now + Math.max(0, gift.cooldownMs || 0)); }
+function registerGiftUsage(senderUserId, requested) {
+  const limits = getGiftLimits();
+  const perPlayer = clamp(Number(limits.perPlayerPerRound) || 12, 1, 100);
+  const perRound = clamp(Number(limits.perRound) || 120, 1, 1000);
+  const maxCombo = clamp(Number(limits.maxComboActivations) || 2, 1, 10);
+  const used = giftUsage.get(senderUserId) || 0;
+  const available = Math.max(0, Math.min(perPlayer - used, perRound - roundGiftCount, maxCombo));
+  const accepted = Math.max(0, Math.min(available, Math.max(1, requested)));
+  if (accepted > 0) { giftUsage.set(senderUserId, used + accepted); roundGiftCount += accepted; }
+  return accepted;
+}
+
+function applyPendingForPlayer(player, now = nowMs()) {
+  if (state.phase !== 'running') return [];
+  const list = pendingGifts.get(player.platformUserId) || [];
+  const valid = list.filter((item) => item.expiresAt > now);
+  pendingGifts.delete(player.platformUserId);
+  const results = [];
+  for (const item of valid) results.push(applyResolvedGift({ ...item, targetPlayer: player, now, fromPending: true }));
+  return results;
+}
 
 export function join(username, teamChoice = null, bot = false, identity = {}) {
-  const id = clean(username);
-  if (!players.has(id)) {
+  const platformUserId = normalizePlayerId(identity.platformUserId) || localStableId(username);
+  const displayName = sanitizeDisplayName(username, 'fighter', 32);
+  let player = players.get(platformUserId);
+  const isNew = !player;
+  if (!player) {
     const pos = spawnPoint();
-    players.set(id, { id, username: id, platformUserId: String(identity.platformUserId || id).slice(0, 64), avatarUrl: /^https:\/\//i.test(identity.avatarUrl || '') ? String(identity.avatarUrl).slice(0, 500) : '', ...pos, targetX: pos.x, targetY: pos.y, hp: 100, shield: 0, energy: 0, score: 0, eliminations: 0, alive: true, skin: players.size % 4, team: normalizeTeam(teamChoice) || balancedTeam(), bot });
-    feed(`@${id} aterrissou na arena`, 'join');
+    player = {
+      id: platformUserId,
+      username: displayName,
+      platformUserId,
+      avatarUrl: /^https:\/\//i.test(identity.avatarUrl || '') ? String(identity.avatarUrl).slice(0, 500) : '',
+      ...pos,
+      targetX: pos.x,
+      targetY: pos.y,
+      maxHp: 100,
+      hp: 100,
+      shield: 0,
+      shieldUntil: 0,
+      speedMultiplier: 1,
+      speedBoostUntil: 0,
+      energy: 0,
+      score: 0,
+      eliminations: 0,
+      alive: true,
+      skin: players.size % 4,
+      team: normalizeTeam(teamChoice) || balancedTeam(),
+      bot,
+      spawnInvulnerableUntil: state.phase === 'running' ? nowMs() + SPAWN_GRACE_MS : 0,
+      lastMoveAt: nowMs(),
+      wanderAt: 0,
+      nextServerShotAt: nowMs() + 1400,
+    };
+    players.set(platformUserId, player);
+    feed(`@${displayName} aterrissou na arena`, 'join');
+  } else {
+    player.username = displayName;
+    if (identity.avatarUrl && /^https:\/\//i.test(identity.avatarUrl)) player.avatarUrl = String(identity.avatarUrl).slice(0, 500);
   }
-  const player = players.get(id);
-  if (identity.avatarUrl && /^https:\/\//i.test(identity.avatarUrl)) player.avatarUrl = String(identity.avatarUrl).slice(0, 500);
   if (state.bountyTargetPlatformId && player.platformUserId === state.bountyTargetPlatformId) state.bountyTargetId = player.id;
-  sync(); return players.get(id);
+  if (isNew || state.phase === 'running') applyPendingForPlayer(player);
+  sync();
+  return player;
 }
 
-export function addBots(names = []) { names.slice(0, 30).forEach((n) => join(n, null, true)); return state; }
+export function addBots(names = []) { names.slice(0, 30).forEach((name) => join(name, null, true, { platformUserId: localStableId(name) })); return state; }
+
 export function start() {
   const leader = getLeaderboardTop();
-  state.phase = 'running'; state.winner = null; state.roundId = randomUUID(); state.bountyTargetPlatformId = leader?.platformUserId || leader?.id || null; state.bountyTargetId = [...players.values()].find((p) => p.platformUserId === state.bountyTargetPlatformId)?.id || null; state.bountyClaimedBy = null; roundRecorded = false;
+  const now = nowMs();
+  state.phase = 'running';
+  state.winner = null;
+  state.roundId = randomUUID();
+  state.bountyTargetPlatformId = leader?.platformUserId || leader?.id || null;
+  state.bountyTargetId = [...players.values()].find((p) => p.platformUserId === state.bountyTargetPlatformId)?.id || null;
+  state.bountyClaimedBy = null;
+  state.hazards = [];
+  state.boss = emptyBoss();
+  state.bossCooldownUntil = 0;
+  roundRecorded = false;
+  roundGiftCount = 0;
+  giftUsage.clear(); giftCooldowns.clear(); bossDamage.clear(); bossAttackCooldowns.clear(); combatCooldowns.clear();
+  for (const player of players.values()) {
+    player.spawnInvulnerableUntil = now + SPAWN_GRACE_MS;
+    player.lastMoveAt = now;
+    player.wanderAt = now + 500 + Math.random() * 900;
+    player.shieldUntil = 0;
+    player.speedMultiplier = 1;
+    player.speedBoostUntil = 0;
+  }
   feed(`RODADA ${state.round} INICIADA`, 'system');
-  if (state.bountyTargetId) feed(`CAÇADA ATIVA: @${state.bountyTargetId} vale pontuação tripla`, 'bounty');
+  if (state.bountyTargetId) {
+    const target = players.get(state.bountyTargetId);
+    feed(`CAÇADA ATIVA: @${target?.username || 'líder'} vale pontuação tripla`, 'bounty');
+  }
+  for (const player of players.values()) applyPendingForPlayer(player, now);
   sync(); return state;
 }
+
 export function pause() { state.phase = state.phase === 'paused' ? 'running' : 'paused'; feed(state.phase === 'paused' ? 'Batalha pausada' : 'Batalha retomada', 'system'); return state; }
 export function setStorm(value) { state.storm = clamp(Number(value) || 0, 0, 100); feed(`Tempestade em ${state.storm}%`, 'storm'); return state; }
 export function updateSettings(next = {}) {
-  const { giftMapping, removeGift, ...rest } = next;
-  Object.assign(state.settings, Object.fromEntries(Object.entries(rest).filter(([k]) => k in state.settings)));
-  state.settings.arenaBackground = ARENA_BACKGROUNDS.includes(state.settings.arenaBackground) ? state.settings.arenaBackground : 'default';
-  if (giftMapping && typeof giftMapping === 'object') for (const [rawName, cfg] of Object.entries(giftMapping)) {
-    const key = String(rawName).trim().toLowerCase();
-    if (key && cfg && POWER_PRESETS[cfg.kind]) state.settings.giftMapping[key] = { kind: cfg.kind, ...(cfg.sound ? { sound: cfg.sound } : {}) };
+  if ('agentEnabled' in next) state.settings.agentEnabled = Boolean(next.agentEnabled);
+  if ('teamMode' in next) state.settings.teamMode = Boolean(next.teamMode);
+  if ('voiceMode' in next && ['male', 'female'].includes(next.voiceMode)) state.settings.voiceMode = next.voiceMode;
+  if ('voiceIntensity' in next) state.settings.voiceIntensity = clamp(Math.trunc(Number(next.voiceIntensity) || 3), 1, 3);
+  if ('narratorStyle' in next && ['explosive', 'esports', 'cinematic'].includes(next.narratorStyle)) state.settings.narratorStyle = next.narratorStyle;
+  if ('music' in next) state.settings.music = Boolean(next.music);
+  if ('sound' in next) state.settings.sound = Boolean(next.sound);
+  if ('arenaBackground' in next) state.settings.arenaBackground = ARENA_BACKGROUNDS.includes(next.arenaBackground) ? next.arenaBackground : 'default';
+  if (next.giftLimits && typeof next.giftLimits === 'object') {
+    const current = state.settings.giftLimits;
+    state.settings.giftLimits = {
+      perPlayerPerRound: clamp(Number(next.giftLimits.perPlayerPerRound ?? current.perPlayerPerRound) || current.perPlayerPerRound, 1, 100),
+      perRound: clamp(Number(next.giftLimits.perRound ?? current.perRound) || current.perRound, 1, 1000),
+      pendingPerUser: clamp(Number(next.giftLimits.pendingPerUser ?? current.pendingPerUser) || current.pendingPerUser, 1, 10),
+      maxComboActivations: clamp(Number(next.giftLimits.maxComboActivations ?? current.maxComboActivations) || current.maxComboActivations, 1, 10),
+    };
   }
-  if (removeGift) delete state.settings.giftMapping[String(removeGift).trim().toLowerCase()];
   return state;
 }
 
-export function giftPower(diamonds = 1, name = '', mapping = state.settings.giftMapping) {
-  const d = Math.max(1, Number(diamonds) || 1);
-  const mapped = mapping?.[String(name || '').trim().toLowerCase()];
-  const kind = mapped?.kind || (/universe|universo/i.test(name) || d >= 1000 ? 'meteor' : d >= 300 ? 'drone' : d >= 100 ? 'airstrike' : d >= 30 ? 'grenade' : d >= 10 ? 'supply' : d >= 5 ? 'shield' : 'shot');
-  const preset = POWER_PRESETS[kind] || POWER_PRESETS.shot;
-  const tier = POWER_CATALOG.find((power) => power.kind === kind) || POWER_CATALOG[0];
-  return { ...tier, ...preset, kind, ...(mapped?.sound ? { sound: mapped.sound } : {}) };
+export function giftPower(_diamonds = 1, name = '') {
+  const gift = resolveGiftDefinition('', name);
+  return gift ? { ...gift, kind: gift.effect, label: gift.effect.toUpperCase(), color: gift.tier === 'premium' ? 0xffd24d : gift.tier === 'event' ? 0xff8a2b : gift.tier === 'boost' ? 0x2cefff : 0x75ff4d } : null;
 }
 
-export function applyGift({ username, platformUserId, avatarUrl, giftName = 'Presente', diamondCount = 1, repeatCount = 1 }) {
-  const player = join(username, null, false, { platformUserId, avatarUrl });
-  if (state.phase !== 'running' || !player.alive) return { ignored: true };
-  const total = Math.max(1, Number(diamondCount) * Math.max(1, Number(repeatCount)));
-  const power = giftPower(total, giftName, state.settings.giftMapping);
-  player.score += total; player.energy = clamp(player.energy + Math.min(total, 40), 0, 100);
-  if (power.heal) player.hp = clamp(player.hp + power.heal, 0, 100);
-  if (power.shield) player.shield = clamp(player.shield + power.shield, 0, 100);
-  feed(`@${player.id} ativou ${power.label}`, 'gift'); sync();
-  return { playerId: player.id, power, total, giftName };
+function resolveBeneficiary(senderUserId, explicitTargetId) {
+  const explicit = explicitTargetId ? players.get(normalizePlayerId(explicitTargetId)) : null;
+  if (explicit?.alive) return { player: explicit, reason: 'explicit-target' };
+  const donor = findPlayerByPlatformId(senderUserId);
+  if (donor?.alive) return { player: donor, reason: 'donor' };
+  if (state.settings.teamMode && donor?.team) {
+    const ally = activePlayers().filter((p) => p.team === donor.team).sort((a, b) => playerHealthRatio(a) - playerHealthRatio(b) || a.id.localeCompare(b.id))[0];
+    if (ally) return { player: ally, reason: 'lowest-health-ally' };
+  }
+  return { player: null, reason: explicitTargetId ? 'target-unavailable' : 'donor-not-in-arena' };
+}
+
+function storePendingGift(payload, now) {
+  const limits = getGiftLimits();
+  const max = clamp(Number(limits.pendingPerUser) || 3, 1, 10);
+  const current = (pendingGifts.get(payload.senderUserId) || []).filter((item) => item.expiresAt > now).slice(-(max - 1));
+  current.push({ ...payload, expiresAt: now + PENDING_TTL_MS });
+  pendingGifts.set(payload.senderUserId, current);
+}
+
+function damagePlayer(target, amount, { allowElimination = true, now = nowMs() } = {}) {
+  if (!target?.alive || target.spawnInvulnerableUntil > now) return { applied: false, reason: 'spawn-invulnerable', damage: 0, eliminated: false };
+  let remaining = Math.max(0, Number(amount) || 0);
+  const absorbed = Math.min(target.shield, remaining); target.shield -= absorbed; remaining -= absorbed;
+  const maxHpDamage = allowElimination ? target.hp : Math.max(0, target.hp - 10);
+  const hpDamage = Math.min(maxHpDamage, remaining);
+  target.hp = clamp(target.hp - hpDamage, 0, target.maxHp);
+  const eliminated = target.hp <= 0;
+  if (eliminated) target.alive = false;
+  return { applied: absorbed + hpDamage > 0, damage: absorbed + hpDamage, eliminated };
+}
+
+function attackPlayer(attacker, target, { damage = BASE_ATTACK_DAMAGE, awardPoints = true, allowElimination = true, now = nowMs(), reason = 'combat' } = {}) {
+  if (!attacker || !target || !attacker.alive || !target.alive || attacker.id === target.id) return { applied: false, reason: 'invalid-combatants' };
+  if (state.settings.teamMode && attacker.team === target.team) return { applied: false, reason: 'friendly-fire' };
+  const result = damagePlayer(target, damage, { allowElimination, now });
+  if (!result.applied) return result;
+  const bountyClaimed = Boolean(result.eliminated && target.id === state.bountyTargetId);
+  const points = awardPoints ? Math.max(1, Math.round(result.damage)) * (bountyClaimed ? 3 : 1) : 0;
+  attacker.score += points;
+  if (result.eliminated) {
+    attacker.eliminations++;
+    feed(`@${attacker.username} eliminou @${target.username}`, 'elimination');
+    if (bountyClaimed) {
+      state.bountyClaimedBy = attacker.id; state.bountyTargetId = null; state.bountyTargetPlatformId = null;
+      feed(`@${attacker.username} conquistou a CAÇADA TRIPLA`, 'bounty');
+    }
+  }
+  sync();
+  return { applied: true, reason, eliminated: result.eliminated, bountyClaimed, attackerId: attacker.id, targetId: target.id, pointsAwarded: points, damageApplied: result.damage };
+}
+
+function nearestOpponent(player, maxDistance = Infinity) {
+  if (!player) return null;
+  let best = null, bestSq = maxDistance * maxDistance;
+  for (const candidate of activePlayers()) {
+    if (candidate.id === player.id || (state.settings.teamMode && candidate.team === player.team)) continue;
+    const dx = candidate.x - player.x, dy = candidate.y - player.y, d = dx * dx + dy * dy;
+    if (d < bestSq) { best = candidate; bestSq = d; }
+  }
+  return best;
+}
+
+function spawnMeteor(gift, beneficiary, now) {
+  const target = nearestOpponent(beneficiary) || activePlayers().find((p) => p.id !== beneficiary?.id) || beneficiary;
+  if (!target) return null;
+  const hazard = { id: randomUUID(), type: 'meteor', x: target.x, y: target.y, radius: 110, damage: Math.min(30, Math.max(1, gift.magnitude || 24)), createdAt: now, impactAt: now + Math.min(2200, Math.max(900, gift.durationMs || 1800)), expiresAt: now + 3000, visualEffect: gift.visualEffect };
+  state.hazards.push(hazard); state.hazards = state.hazards.slice(-12);
+  return hazard;
+}
+
+function bossHpForPlayers(count) { return clamp(850 + count * 210, 1000, 5000); }
+export function spawnBoss({ source = 'system', now = nowMs() } = {}) {
+  const active = activePlayers();
+  if (state.phase !== 'running' || !active.length) return { applied: false, reason: 'no-active-players', boss: state.boss };
+  if (state.boss.active) {
+    const maxExpiry = state.boss.spawnedAt + 55_000;
+    const nextExpiry = Math.min(maxExpiry, state.boss.expiresAt + 10_000);
+    const extended = Math.max(0, nextExpiry - state.boss.expiresAt);
+    state.boss.expiresAt = nextExpiry;
+    queueEvent('boss:updated', { reason: extended ? 'extended' : 'visual-only', extendedMs: extended, source, boss: { ...state.boss } });
+    return { applied: Boolean(extended), reason: extended ? 'extended' : 'already-active', boss: state.boss };
+  }
+  if (state.bossCooldownUntil > now) return { applied: false, reason: 'cooldown', cooldownUntil: state.bossCooldownUntil, boss: state.boss };
+  const maxHp = bossHpForPlayers(active.length);
+  state.boss = { id: `colossus:${randomUUID()}`, active: true, hp: maxHp, maxHp, x: 640, y: 360, radius: 72, spawnedAt: now, expiresAt: now + 45_000, targetPlayerId: null, lastAttackAt: now, attack: null, cooldownUntil: now + 60_000 };
+  state.bossCooldownUntil = now + 60_000;
+  bossDamage.clear(); bossAttackCooldowns.clear(); bossLastTickAt = now;
+  feed('COLOSSUS NEON entrou na arena', 'boss');
+  queueEvent('boss:spawned', { source, boss: { ...state.boss } });
+  return { applied: true, boss: state.boss };
+}
+
+function clearBoss(reason, { reward = false, now = nowMs() } = {}) {
+  if (!state.boss.active) return null;
+  const old = { ...state.boss };
+  if (reward) {
+    const active = activePlayers();
+    const totalDamage = [...bossDamage.values()].reduce((sum, n) => sum + n, 0) || 1;
+    for (const player of active) {
+      const contribution = bossDamage.get(player.id) || 0;
+      const ratio = contribution / totalDamage;
+      const base = state.settings.teamMode ? 10 : 15;
+      const bonus = Math.min(state.settings.teamMode ? 10 : 20, Math.round(ratio * 30));
+      player.score += base + bonus;
+    }
+    feed('COLOSSUS NEON foi derrotado pela arena', 'boss');
+    queueEvent('boss:defeated', { boss: old, participants: active.length });
+  } else if (reason === 'expired') {
+    feed('COLOSSUS NEON escapou da arena', 'boss');
+    queueEvent('boss:escaped', { boss: old });
+  }
+  state.boss = { ...emptyBoss(), cooldownUntil: state.bossCooldownUntil };
+  bossDamage.clear(); bossAttackCooldowns.clear();
+  sync();
+  return old;
+}
+
+function applyResolvedGift({ gift, senderUserId, senderUsername, giftName, repeatCount, source, eventId, targetPlayer, now, fromPending = false }) {
+  if (!gift || !targetPlayer?.alive) return { status: 'rejected', reason: 'invalid-beneficiary' };
+  const cooldown = canUseGift(targetPlayer.id, gift, now);
+  if (!cooldown.ok && gift.effect !== 'colossus') return { status: 'rejected', reason: 'cooldown', cooldownUntil: cooldown.cooldownUntil };
+  let effectResult = { applied: true };
+  if (gift.effect === 'heal') {
+    if (targetPlayer.hp < targetPlayer.maxHp) {
+      const heal = Math.min(20, targetPlayer.maxHp * 0.2, targetPlayer.maxHp - targetPlayer.hp);
+      targetPlayer.hp += heal; effectResult = { applied: true, heal };
+    } else {
+      targetPlayer.shield = Math.max(targetPlayer.shield, 10);
+      targetPlayer.shieldUntil = now + Math.min(5000, Math.max(1, gift.durationMs || 5000));
+      effectResult = { applied: true, shield: 10, durationMs: targetPlayer.shieldUntil - now };
+    }
+  } else if (gift.effect === 'speed') {
+    targetPlayer.speedMultiplier = Math.min(1.5, Math.max(1, Number(gift.magnitude) || 1.5));
+    targetPlayer.speedBoostUntil = now + Math.min(5000, Math.max(1, gift.durationMs || 5000));
+    effectResult = { applied: true, speedMultiplier: targetPlayer.speedMultiplier, durationMs: targetPlayer.speedBoostUntil - now };
+  } else if (gift.effect === 'extra-projectile') {
+    const target = nearestOpponent(targetPlayer, 520);
+    effectResult = target ? attackPlayer(targetPlayer, target, { damage: 7, now, reason: 'gift-extra-projectile' }) : { applied: false, reason: 'no-target' };
+  } else if (gift.effect === 'meteor') {
+    const hazard = spawnMeteor(gift, targetPlayer, now);
+    effectResult = hazard ? { applied: true, hazardId: hazard.id } : { applied: false, reason: 'no-target' };
+  } else if (gift.effect === 'premium-shield') {
+    targetPlayer.shield = Math.max(targetPlayer.shield, Math.min(20, Math.max(1, gift.magnitude || 15)));
+    targetPlayer.shieldUntil = now + Math.min(3000, Math.max(1, gift.durationMs || 3000));
+    effectResult = { applied: true, shield: targetPlayer.shield, durationMs: targetPlayer.shieldUntil - now };
+  } else if (gift.effect === 'colossus') {
+    effectResult = spawnBoss({ source, now });
+  }
+  if (effectResult.applied && gift.effect !== 'colossus') setGiftCooldown(cooldown.key, gift, now);
+  const payload = {
+    eventId, source, tier: gift.tier, effect: gift.effect, visualEffect: gift.visualEffect, narrationPriority: gift.narrationPriority,
+    giftId: gift.giftId, giftName: sanitizeDisplayName(giftName || gift.aliases[0], 'Presente', 48), repeatCount,
+    senderUserId, senderUsername: sanitizeDisplayName(senderUsername, 'fighter', 32), targetPlayerId: targetPlayer.id, targetUsername: targetPlayer.username,
+    fromPending, result: effectResult,
+  };
+  if (effectResult.applied) {
+    feed(`@${payload.senderUsername} enviou ${payload.giftName} — ${gift.effect} em @${targetPlayer.username}`, gift.tier === 'premium' ? 'boss' : 'gift');
+    queueEvent('gift:applied', payload);
+  }
+  sync();
+  return { status: effectResult.applied ? 'applied' : 'rejected', reason: effectResult.reason, ...payload };
+}
+
+export function applyGiftEffect(input = {}) {
+  const now = Number(input.now) || nowMs();
+  const eventId = sanitizeStableId(input.eventId);
+  const senderUserId = sanitizeStableId(input.senderUserId);
+  const senderUsername = sanitizeDisplayName(input.senderUsername, 'fighter', 32);
+  const source = input.source === 'control-panel' ? 'control-panel' : 'tiktok';
+  const repeatCount = clamp(Math.trunc(Number(input.repeatCount) || 1), 1, 100);
+  const gift = resolveGiftDefinition(input.giftId, input.giftName);
+  if (!eventId || !senderUserId) {
+    const rejected = { eventId, source, status: 'rejected', reason: 'invalid-event', senderUsername };
+    queueEvent('gift:rejected', rejected); return rejected;
+  }
+  if (!rememberGiftEvent(eventId, now)) {
+    const duplicate = { eventId, source, status: 'rejected', reason: 'duplicate-event', senderUsername };
+    queueEvent('gift:rejected', duplicate); return duplicate;
+  }
+  if (!gift) {
+    const unknown = { eventId, source, status: 'rejected', reason: 'unknown-gift', visualOnly: true, giftName: sanitizeDisplayName(input.giftName, 'Presente', 48), senderUsername };
+    queueEvent('gift:rejected', unknown); return unknown;
+  }
+  if (state.phase !== 'running') {
+    const rejected = { eventId, source, status: 'rejected', reason: 'round-not-running', giftId: gift.giftId, giftName: sanitizeDisplayName(input.giftName, gift.aliases[0], 48), senderUsername };
+    queueEvent('gift:rejected', rejected); return rejected;
+  }
+  const acceptedActivations = registerGiftUsage(senderUserId, repeatCount);
+  if (!acceptedActivations) {
+    const rejected = { eventId, source, status: 'rejected', reason: 'round-limit', giftId: gift.giftId, senderUsername };
+    queueEvent('gift:rejected', rejected); return rejected;
+  }
+  const beneficiary = resolveBeneficiary(senderUserId, input.targetUserId);
+  if (!beneficiary.player) {
+    const pendingPayload = { gift, eventId, senderUserId, senderUsername, giftName: input.giftName || gift.aliases[0], repeatCount: acceptedActivations, source };
+    storePendingGift(pendingPayload, now);
+    const pending = { eventId, source, status: 'pending', reason: beneficiary.reason, giftId: gift.giftId, giftName: sanitizeDisplayName(input.giftName, gift.aliases[0], 48), senderUserId, senderUsername, expiresAt: now + PENDING_TTL_MS };
+    queueEvent('gift:pending', pending); return pending;
+  }
+  let result = null;
+  for (let i = 0; i < acceptedActivations; i++) {
+    const applied = applyResolvedGift({ gift, eventId: i === 0 ? eventId : `${eventId}:${i + 1}`, senderUserId, senderUsername, giftName: input.giftName, repeatCount: acceptedActivations, source, targetPlayer: beneficiary.player, now: now + i, fromPending: false });
+    result = result || applied;
+    if (applied.status !== 'applied' || gift.effect !== 'heal') break;
+  }
+  if (result?.status === 'rejected') queueEvent('gift:rejected', { ...result, eventId, source, senderUsername });
+  return result || { status: 'rejected', reason: 'not-applied' };
+}
+
+export function applyGift({ username, platformUserId, giftName = 'Presente', repeatCount = 1, giftId = '', eventId = randomUUID(), source = 'control-panel' }) {
+  return applyGiftEffect({ eventId, senderUserId: platformUserId || localStableId(username), senderUsername: username, giftId, giftName, repeatCount, source });
 }
 
 export function applyComment({ username, platformUserId, avatarUrl, comment = '' }) {
-  const cmd = String(comment).trim().toLowerCase();
+  const stableId = normalizePlayerId(platformUserId) || localStableId(username);
+  const display = sanitizeDisplayName(username, 'fighter', 32);
+  const cmd = String(comment).replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().toLowerCase();
   const joinCommand = cmd.match(/^!(?:entrar|join)(?:\s+(azul|blue|vermelho|red))?$/);
-  if (joinCommand) return { kind: 'join', player: join(username, joinCommand[1] || null, false, { platformUserId, avatarUrl }) };
-  const p = players.get(clean(username));
+  if (joinCommand) return { kind: 'join', player: join(display, joinCommand[1] || null, false, { platformUserId: stableId, avatarUrl }) };
+  const p = players.get(stableId);
+  if (p) { p.username = display; if (avatarUrl && /^https:\/\//i.test(avatarUrl)) p.avatarUrl = String(avatarUrl).slice(0, 500); }
   if (!p || !p.alive || state.phase !== 'running') return { kind: 'chat' };
   if (cmd === '!esquerda') p.targetX = clamp(p.x - 180, 70, 1210);
   if (cmd === '!direita') p.targetX = clamp(p.x + 180, 70, 1210);
   if (cmd === '!cima') p.targetY = clamp(p.y - 140, 80, 630);
   if (cmd === '!baixo') p.targetY = clamp(p.y + 140, 80, 630);
-  if (cmd === '!poder' && p.energy >= 100) { p.energy = 0; return { kind: 'power', playerId: p.id, power: giftPower(30, 'energia') }; }
+  if (['!esquerda', '!direita', '!cima', '!baixo'].includes(cmd)) p.wanderAt = nowMs() + 1500;
   return { kind: cmd.startsWith('!') ? 'command' : 'chat', player: p };
 }
 
-export function applyCombatResult({ attackerId, targetId, damage, targetHp, targetShield, eliminated }) {
-  const attacker = players.get(attackerId); const target = players.get(targetId);
-  if (!attacker || !target || !attacker.alive || !target.alive || attacker.id === target.id) return { applied: false, reason: 'invalid-combatants' };
-  if (state.settings.teamMode && attacker.team === target.team) return { applied: false, reason: 'friendly-fire' };
-  target.hp = clamp(targetHp, 0, 100); target.shield = clamp(targetShield, 0, 100);
-  const basePoints = Math.max(1, Math.round(Number(damage) || 0));
-  const bountyClaimed = Boolean(eliminated && target.id === state.bountyTargetId);
-  attacker.score += basePoints * (bountyClaimed ? 3 : 1);
-  if (eliminated) {
-    target.alive = false; attacker.eliminations++;
-    feed(`@${attacker.id} eliminou @${target.id}`, 'elimination');
-    if (bountyClaimed) { state.bountyClaimedBy = attacker.id; state.bountyTargetId = null; state.bountyTargetPlatformId = null; feed(`@${attacker.id} conquistou a CAÇADA TRIPLA`, 'bounty'); }
-  }
-  sync();
-  return { applied: true, eliminated: Boolean(eliminated), bountyClaimed, attackerId: attacker.id, targetId: target.id, pointsAwarded: basePoints * (bountyClaimed ? 3 : 1) };
+export function applyCombatResult({ attackerId, targetId, attackKind = 'shot' }) {
+  const attacker = players.get(normalizePlayerId(attackerId));
+  const target = players.get(normalizePlayerId(targetId));
+  if (attackKind !== 'shot') return { applied: false, reason: 'invalid-attack' };
+  if (!attacker || !target) return { applied: false, reason: 'invalid-combatants' };
+  const now = nowMs();
+  const key = `${attacker.id}:${attackKind}`;
+  if ((combatCooldowns.get(key) || 0) > now) return { applied: false, reason: 'attack-cooldown' };
+  combatCooldowns.set(key, now + ATTACK_COOLDOWN_MS);
+  return attackPlayer(attacker, target, { damage: BASE_ATTACK_DAMAGE, now, reason: 'combat' });
 }
 
-export function applyStormDamage(targetId, damage = 4) {
-  const target = players.get(targetId); if (!target || !target.alive || state.phase !== 'running') return;
-  target.hp = clamp(target.hp - Math.max(1, damage), 0, 100);
-  if (target.hp === 0) { target.alive = false; feed(`@${target.id} foi engolido pela tempestade`, 'storm'); }
-  sync();
+export function applyStormDamage(targetId) {
+  const target = players.get(normalizePlayerId(targetId));
+  if (!target || !target.alive || state.phase !== 'running') return { applied: false, reason: 'invalid-target' };
+  const damage = state.storm >= 75 ? 7 : state.storm >= 45 ? 4 : 2;
+  const result = damagePlayer(target, damage, { allowElimination: true });
+  if (result.eliminated) feed(`@${target.username} foi engolido pela tempestade`, 'storm');
+  sync(); return result;
 }
 
-export function positions(next = []) { next.forEach(({ id, x, y, targetX, targetY }) => { const p = players.get(id); if (p) Object.assign(p, { x, y, targetX, targetY }); }); sync(); }
-export function likes(count = 1) { state.likes += Number(count) || 1; if (state.likes >= 500) { state.likes -= 500; state.storm = clamp(state.storm - 12, 0, 100); feed('500 curtidas repeliram a tempestade!', 'like'); return true; } return false; }
+export function likes(count = 1) { state.likes += Math.max(0, Number(count) || 0); if (state.likes >= 500) { state.likes -= 500; state.storm = clamp(state.storm - 12, 0, 100); feed('500 curtidas repeliram a tempestade!', 'like'); return true; } return false; }
 export function tickStorm() { if (state.phase === 'running') state.storm = clamp(state.storm + 1, 0, 100); }
+
+function tickMovement(now) {
+  for (const player of activePlayers()) {
+    const previous = player.lastMoveAt || now;
+    const dt = clamp((now - previous) / 1000, 0, 0.5);
+    player.lastMoveAt = now;
+    let dx = player.targetX - player.x, dy = player.targetY - player.y, distance = Math.hypot(dx, dy);
+    if (!player.wanderAt || now >= player.wanderAt || distance < 10) {
+      player.targetX = 90 + Math.random() * (ARENA_W - 180);
+      player.targetY = 90 + Math.random() * (ARENA_H - 180);
+      player.wanderAt = now + 1600 + Math.random() * 1900;
+      dx = player.targetX - player.x; dy = player.targetY - player.y; distance = Math.hypot(dx, dy);
+    }
+    if (distance > 1 && dt > 0) {
+      const step = Math.min(distance, 38 * clamp(player.speedMultiplier || 1, 1, 1.5) * dt);
+      player.x = clamp(player.x + dx / distance * step, 55, ARENA_W - 55);
+      player.y = clamp(player.y + dy / distance * step, 55, ARENA_H - 55);
+    }
+  }
+}
+
+function tickPlayerCombat(now) {
+  for (const attacker of activePlayers()) {
+    if ((attacker.nextServerShotAt || 0) > now) continue;
+    attacker.nextServerShotAt = now + 1600;
+    const target = nearestOpponent(attacker, 260);
+    if (!target) continue;
+    const result = attackPlayer(attacker, target, { damage: BASE_ATTACK_DAMAGE, now, reason: 'combat' });
+    if (result.applied) queueEvent('combat:shot', { attackerId: attacker.id, targetId: target.id, damage: result.damageApplied, eliminated: result.eliminated, bountyClaimed: result.bountyClaimed });
+  }
+}
+
+function tickEffects(now) {
+  for (const p of players.values()) {
+    if (p.shieldUntil && p.shieldUntil <= now) { p.shield = 0; p.shieldUntil = 0; }
+    if (p.speedBoostUntil && p.speedBoostUntil <= now) { p.speedMultiplier = 1; p.speedBoostUntil = 0; }
+  }
+}
+function tickHazards(now) {
+  const keep = [];
+  for (const hazard of state.hazards) {
+    if (hazard.type === 'meteor' && !hazard.resolved && now >= hazard.impactAt) {
+      hazard.resolved = true;
+      for (const player of activePlayers()) {
+        const distance = Math.hypot(player.x - hazard.x, player.y - hazard.y);
+        if (distance <= hazard.radius) damagePlayer(player, hazard.damage, { allowElimination: false, now });
+      }
+      queueEvent('boss:updated', { reason: 'meteor-impact', hazardId: hazard.id });
+    }
+    if (now < hazard.expiresAt) keep.push(hazard);
+  }
+  state.hazards = keep;
+}
+function chooseBossTarget() {
+  let best = null, bestDist = Infinity;
+  for (const p of activePlayers()) {
+    const d = Math.hypot(p.x - state.boss.x, p.y - state.boss.y);
+    if (d < bestDist) { best = p; bestDist = d; }
+  }
+  return best;
+}
+function tickBoss(now) {
+  const boss = state.boss;
+  if (!boss.active) return;
+  if (state.phase !== 'running') { clearBoss('round-ended', { reward: false, now }); return; }
+  if (now >= boss.expiresAt) { clearBoss('expired', { reward: false, now }); return; }
+  const target = chooseBossTarget();
+  boss.targetPlayerId = target?.id || null;
+  const dt = clamp((now - bossLastTickAt) / 1000, 0, 1); bossLastTickAt = now;
+  if (target) {
+    const dx = target.x - boss.x, dy = target.y - boss.y, d = Math.hypot(dx, dy) || 1;
+    const step = Math.min(d, 42 * dt); boss.x = clamp(boss.x + dx / d * step, 90, 1190); boss.y = clamp(boss.y + dy / d * step, 90, 630);
+  }
+  if (boss.attack && now >= boss.attack.impactAt) {
+    for (const p of activePlayers()) {
+      if (Math.hypot(p.x - boss.attack.x, p.y - boss.attack.y) <= boss.attack.radius) damagePlayer(p, boss.attack.damage, { allowElimination: false, now });
+    }
+    boss.lastAttackAt = now; boss.attack = null;
+    queueEvent('boss:updated', { reason: 'attack-resolved', boss: { ...boss } });
+  } else if (!boss.attack && target && now - boss.lastAttackAt >= 8000) {
+    boss.attack = { id: randomUUID(), x: target.x, y: target.y, radius: 120, damage: 22, warnedAt: now, impactAt: now + 3000, targetPlayerId: target.id };
+    queueEvent('boss:updated', { reason: 'attack-warning', boss: { ...boss } });
+  }
+  for (const p of activePlayers()) {
+    if (Math.hypot(p.x - boss.x, p.y - boss.y) > 380) continue;
+    const until = bossAttackCooldowns.get(p.id) || 0; if (until > now) continue;
+    bossAttackCooldowns.set(p.id, now + 1500);
+    const damage = 6; boss.hp = Math.max(0, boss.hp - damage); bossDamage.set(p.id, (bossDamage.get(p.id) || 0) + damage);
+    if (boss.hp <= 0) { clearBoss('defeated', { reward: true, now }); return; }
+  }
+}
+function tickStormDamage(now) {
+  if (state.storm < 15) return;
+  const safeRadius = Math.max(90, 575 - state.storm * 4.2);
+  for (const p of activePlayers()) {
+    if (Math.hypot(p.x - 640, p.y - 360) <= safeRadius) continue;
+    if ((p.nextStormHitAt || 0) > now) continue;
+    p.nextStormHitAt = now + 1000;
+    applyStormDamage(p.id);
+  }
+}
+export function tickGame(now = nowMs()) {
+  pruneProcessed(now); tickEffects(now);
+  if (state.phase === 'running') { tickMovement(now); tickPlayerCombat(now); tickHazards(now); tickBoss(now); tickStormDamage(now); }
+  sync(); return state;
+}
+
 export function finish() {
+  if (state.boss.active) clearBoss('round-ended', { reward: false });
+  state.hazards = [];
   state.phase = 'ended'; sync();
   if (state.settings.teamMode && players.size > 0) {
     const blue = { type: 'team', team: 'blue', label: 'TIME AZUL', ...state.teamScores.blue };
@@ -157,14 +604,26 @@ export function finish() {
   } else if (!state.settings.teamMode) {
     const winner = [...players.values()].filter((p) => p.alive).sort((a, b) => b.hp - a.hp || b.score - a.score)[0] || [...players.values()].sort((a, b) => b.score - a.score)[0] || null;
     state.winner = winner ? { ...winner, type: 'player' } : null;
-    feed(winner ? `@${winner.id} É O CAMPEÃO!` : 'Rodada sem vencedor', 'winner');
-  } else {
-    state.winner = null; feed('Rodada sem vencedor', 'winner');
-  }
+    feed(winner ? `@${winner.username} É O CAMPEÃO!` : 'Rodada sem vencedor', 'winner');
+  } else { state.winner = null; feed('Rodada sem vencedor', 'winner'); }
   if (!roundRecorded) {
     recordRound([...players.values()].map((p) => ({ ...p, roundWinner: state.winner?.type === 'player' ? state.winner.id === p.id : state.winner?.team === p.team })), state.roundId);
     roundRecorded = true;
   }
   return state.winner;
 }
-export function reset() { players.clear(); roundRecorded = false; Object.assign(state, { phase: 'lobby', round: state.round + 1, roundId: randomUUID(), storm: 0, likes: 0, players: [], feed: [], winner: null, bountyTargetId: null, bountyTargetPlatformId: null, bountyClaimedBy: null, teamScores: { blue: { score: 0, survivors: 0, eliminations: 0 }, red: { score: 0, survivors: 0, eliminations: 0 } } }); return state; }
+
+export function reset() {
+  players.clear(); roundRecorded = false; roundGiftCount = 0; giftUsage.clear(); giftCooldowns.clear(); processedGiftIds.clear(); pendingGifts.clear(); combatCooldowns.clear(); bossAttackCooldowns.clear(); bossDamage.clear(); engineEvents.length = 0;
+  Object.assign(state, { phase: 'lobby', round: state.round + 1, roundId: randomUUID(), storm: 0, likes: 0, players: [], feed: [], winner: null, bountyTargetId: null, bountyTargetPlatformId: null, bountyClaimedBy: null, hazards: [], boss: emptyBoss(), bossCooldownUntil: 0, teamScores: { blue: { score: 0, survivors: 0, eliminations: 0 }, red: { score: 0, survivors: 0, eliminations: 0 } } });
+  return state;
+}
+
+export const __test = {
+  get players() { return players; },
+  get pendingGifts() { return pendingGifts; },
+  setPlayerHp(id, hp) { const p = players.get(id); if (p) p.hp = clamp(hp, 0, p.maxHp); sync(); },
+  setPlayerAlive(id, alive) { const p = players.get(id); if (p) p.alive = Boolean(alive); sync(); },
+  expireSpawnProtection(id) { const p = players.get(id); if (p) p.spawnInvulnerableUntil = 0; },
+  clearGiftCooldowns() { giftCooldowns.clear(); },
+};
