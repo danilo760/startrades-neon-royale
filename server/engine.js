@@ -386,6 +386,7 @@ function applyResolvedGift({ gift, senderUserId, senderUsername, giftName, repea
         playerId: targetPlayer.id,
         username: targetPlayer.username,
         amount: heal,
+        heal,
         hp: targetPlayer.hp,
         maxHp: targetPlayer.maxHp,
         source: 'gift',
@@ -671,7 +672,7 @@ export function tickGame(now = nowMs()) {
   }
   if (state.phase === 'ended' && state.intermissionEndsAt > 0 && now >= state.intermissionEndsAt) {
     const previousRound = state.round;
-    reset({ preservePlayers: true, preserveGiftInbox: true });
+    reset({ preservePlayers: true, preserveGiftInbox: true, now });
     publishEngineEvent('round:lobby', { previousRound, round: state.round, playerCount: state.players.length });
   }
   sync(); return state;
@@ -707,12 +708,11 @@ export function finish({ now = nowMs(), intermissionMs = DEFAULT_INTERMISSION_MS
   return state.winner;
 }
 
-export function reset({ preservePlayers = false, preserveGiftInbox = false } = {}) {
+export function reset({ preservePlayers = false, preserveGiftInbox = false, now = nowMs() } = {}) {
   if (!preservePlayers) players.clear(); roundRecorded = false; roundGiftCount = 0;
   giftUsage.clear(); giftCooldowns.clear(); combatCooldowns.clear(); bossAttackCooldowns.clear(); bossDamage.clear();
-  if (preserveGiftInbox) pruneProcessed(); else { processedGiftIds.clear(); pendingGifts.clear(); }
+  if (preserveGiftInbox) pruneProcessed(now); else { processedGiftIds.clear(); pendingGifts.clear(); }
   if (preservePlayers) {
-    const now = nowMs();
     for (const p of players.values()) Object.assign(p, { hp: p.maxHp, shield: 0, shieldUntil: 0, speedMultiplier: 1, speedBoostUntil: 0, hype: 0, starPowerUntil: 0, energy: 0, score: 0, eliminations: 0, alive: true, spawnInvulnerableUntil: 0, lastMoveAt: now, nextStormHitAt: 0 });
   }
   Object.assign(state, { phase: 'lobby', round: state.round + 1, roundId: randomUUID(), storm: 0, likes: 0, players: [], feed: [], winner: null, countdownEndsAt: 0, intermissionEndsAt: 0, roundStartedAt: 0, suddenDeath: { active: false, startedAt: 0 }, bountyTargetId: null, bountyTargetPlatformId: null, bountyClaimedBy: null, hazards: [], boss: emptyBoss(), bossCooldownUntil: 0, teamScores: { blue: { score: 0, survivors: 0, eliminations: 0 }, red: { score: 0, survivors: 0, eliminations: 0 } } });

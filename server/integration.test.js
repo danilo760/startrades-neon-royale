@@ -54,6 +54,7 @@ test('HTTP/WebSocket simulation covers admin auth, lifecycle guards, gift, boss,
 
     result = await request(base, '/api/battle/start', token);
     assert.equal(result.response.status, 200); assert.equal(result.data.state.phase, 'running');
+    await sleep(300);
     result = await request(base, '/api/battle/start', token);
     assert.equal(result.response.status, 409); assert.equal(result.data.error, 'battle-not-in-lobby');
 
