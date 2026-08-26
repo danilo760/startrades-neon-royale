@@ -5,8 +5,8 @@ import { WebSocketServer } from 'ws';
 import { TikTokLive } from 'tiktok-live-api';
 import { authorizeAdminRequest, sanitizedAdminLog } from './admin.js';
 import { GiftEventLedger, resolveGiftDefinition, sanitizeDisplayName, sanitizeNarrationName } from './gifts.js';
-import { addBots, applyComment, applyGiftEffect, drainEngineEvents, finish, likes, pause, reset, setStorm, spawnBoss, start, state, tickGame, tickStorm, updateSettings } from './engine.js';
-import { ENGINE_EVENT_CHANNEL, eventBus, publishEngineEvent } from './event-bus.js';
+import { addBots, applyComment, applyGiftEffect, finish, likes, pause, reset, setStorm, spawnBoss, start, state, tickGame, tickStorm, updateSettings } from './engine.js';
+import { ENGINE_EVENT_CHANNEL, eventBus } from './event-bus.js';
 import { initializeLeaderboard } from './leaderboard.js';
 
 const cfg = {
@@ -95,10 +95,6 @@ function narrateEngineEvent(event) {
 eventBus.on(ENGINE_EVENT_CHANNEL, (event) => emit(event.type, event.payload));
 eventBus.on(ENGINE_EVENT_CHANNEL, narrateEngineEvent);
 
-function flushEngineEvents() {
-  for (const event of drainEngineEvents()) publishEngineEvent(event.type, event.payload, event.at);
-}
-
 function chat(event) {
   const user = event.user || {};
   const senderUserId = String(user.userId || '');
@@ -108,7 +104,6 @@ function chat(event) {
   if (!senderUserId) { emit('comment', { username, comment, rejected: 'missing-user-id' }); return; }
   const result = applyComment({ username, platformUserId: senderUserId, avatarUrl, comment });
   emit('comment', { username, comment, result });
-  flushEngineEvents();
   if (result.kind === 'join') queueNarration(`${sanitizeNarrationName(result.player.username)} entrou na arena.`, { priority: 1, emotion: 'welcome' });
   else if (/^(oi|olá|ola|como joga|!ajuda)$/i.test(comment.trim())) queueNarration('Explique: use exclamação entrar para participar e Gifts ativam efeitos balanceados.', { priority: 1, emotion: 'friendly' });
 }
@@ -125,7 +120,6 @@ function gift(event) {
   }
   const e = parsed.event;
   applyGiftEffect({ eventId: e.eventId, senderUserId: e.senderUserId, senderUsername: e.senderUsername, targetUserId: e.targetUserId, giftId: e.giftId, giftName: e.giftName, repeatCount: e.repeatCount, source: 'tiktok' });
-  flushEngineEvents();
 }
 
 if (!cfg.mock) {
@@ -147,10 +141,10 @@ const admin = (action) => (req, res, next) => {
 };
 const adminLog = (data) => console.info('[admin]', JSON.stringify(sanitizedAdminLog(data)));
 
-app.post('/api/battle/start', admin('battle-start'), (_req, res) => { start(); emit('battle-start'); flushEngineEvents(); queueNarration('A batalha começou. A arena está valendo.', { priority: 4, emotion: 'battle' }); ok(res); });
+app.post('/api/battle/start', admin('battle-start'), (_req, res) => { start(); emit('battle-start'); queueNarration('A batalha começou. A arena está valendo.', { priority: 4, emotion: 'battle' }); ok(res); });
 app.post('/api/battle/pause', admin('battle-pause'), (_req, res) => { pause(); emit('battle-pause'); queueNarration(state.phase === 'paused' ? 'Batalha pausada.' : 'Batalha retomada.', { priority: 3, emotion: state.phase === 'paused' ? 'calm' : 'battle' }); ok(res); });
 const winnerName = (winner) => winner?.type === 'team' ? winner.label : winner?.username ? `@${winner.username}` : null;
-app.post('/api/battle/end', admin('battle-end'), (_req, res) => { const winner = finish(); emit('battle-end', { winner }); flushEngineEvents(); const name = winnerName(winner); queueNarration(name ? `${name} domina a arena e vence a rodada.` : 'A rodada terminou sem campeão.', { priority: 5, emotion: 'victory' }); ok(res); });
+app.post('/api/battle/end', admin('battle-end'), (_req, res) => { const winner = finish(); emit('battle-end', { winner }); const name = winnerName(winner); queueNarration(name ? `${name} domina a arena e vence a rodada.` : 'A rodada terminou sem campeão.', { priority: 5, emotion: 'victory' }); ok(res); });
 app.post('/api/battle/reset', admin('battle-reset'), (_req, res) => { reset(); emit('reset'); ok(res); });
 app.post('/api/test/players', admin('test-players'), (req, res) => { if (!cfg.mock) return res.status(403).json({ ok: false, error: 'test-mode-disabled' }); addBots(req.body.names || []); emit('players'); ok(res); });
 app.post('/api/storm', admin('storm'), (req, res) => { setStorm(req.body.value); emit('storm', { value: state.storm }); if (state.storm >= 60) queueNarration(`Tempestade em ${state.storm} por cento.`, { priority: 2, emotion: 'urgent' }); ok(res); });
@@ -164,13 +158,12 @@ app.post('/api/admin/gift', admin('gift'), (req, res) => {
   if (!target) return res.status(400).json({ ok: false, error: 'invalid-target-player' });
   adminLog({ action: 'simulate-gift', giftId: giftDef.giftId, targetPlayerId: target.id, source: 'control-panel' });
   const result = applyGiftEffect({ eventId: `admin:${randomUUID()}`, senderUserId: 'admin-simulator', senderUsername: 'SIMULAÇÃO', targetUserId: target.id, giftId: giftDef.giftId, giftName: giftDef.aliases[0], repeatCount: 1, source: 'control-panel' });
-  flushEngineEvents();
   res.json({ ok: result.status === 'applied', result, state });
 });
 app.post('/api/admin/boss', admin('boss'), (req, res) => {
   if (!cfg.mock) return res.status(403).json({ ok: false, error: 'test-mode-disabled' });
   adminLog({ action: 'spawn-boss', source: 'control-panel' });
-  const result = spawnBoss({ source: 'control-panel' }); flushEngineEvents();
+  const result = spawnBoss({ source: 'control-panel' });
   res.status(result.applied || result.reason === 'extended' ? 200 : 409).json({ ok: Boolean(result.applied), result, state });
 });
 app.post('/api/mock/gift', (_req, res) => res.status(410).json({ ok: false, error: 'use-admin-gift-simulator' }));
@@ -183,12 +176,12 @@ function autoFinish() {
   const alive = state.players.filter((p) => p.alive), joinedTeams = new Set(state.players.map((p) => p.team)), aliveTeams = new Set(alive.map((p) => p.team));
   const battleOver = state.settings.teamMode ? joinedTeams.size >= 2 && aliveTeams.size <= 1 : alive.length <= 1;
   if (state.phase === 'running' && state.players.length >= 2 && battleOver) {
-    const winner = finish(); emit('battle-end', { winner }); flushEngineEvents();
+    const winner = finish(); emit('battle-end', { winner });
     const name = winnerName(winner); queueNarration(name ? `${name} sobreviveu ao caos e venceu.` : 'A tempestade eliminou todos os combatentes.', { priority: 5, emotion: 'victory' });
   }
 }
 let lastStateBroadcastAt = 0;
-setInterval(() => { const now = Date.now(); tickGame(now); flushEngineEvents(); autoFinish(); if (state.phase === 'running' && now - lastStateBroadcastAt >= 500) { lastStateBroadcastAt = now; emit('tick'); } }, 250).unref?.();
+setInterval(() => { const now = Date.now(); tickGame(now); autoFinish(); if (state.phase === 'running' && now - lastStateBroadcastAt >= 500) { lastStateBroadcastAt = now; emit('tick'); } }, 250).unref?.();
 setInterval(() => { tickStorm(); if (state.phase === 'running') emit('tick'); }, 7000).unref?.();
 
 let shuttingDown = false;
