@@ -18,6 +18,8 @@ const cfg = {
   mock: process.env.MOCK_MODE !== 'false',
   port: Number(process.env.PORT || 4173),
   adminToken: process.env.ADMIN_TOKEN || '',
+  countdownMs: Math.max(0, Math.min(15000, Number(process.env.BATTLE_COUNTDOWN_MS ?? 5000) || 0)),
+  intermissionMs: Math.max(0, Math.min(60000, Number(process.env.BATTLE_INTERMISSION_MS ?? 10000) || 0)),
 };
 
 const app = express();
@@ -90,13 +92,13 @@ const admin = (action) => (req, res, next) => {
 };
 const adminLog = (data) => console.info('[admin]', JSON.stringify(sanitizedAdminLog(data)));
 
-app.post('/api/battle/start', admin('battle-start'), (_req, res) => { start(); emit('battle-start'); ok(res); });
+app.post('/api/battle/start', admin('battle-start'), (_req, res) => { start({ countdownMs: cfg.countdownMs }); ok(res); });
 app.post('/api/battle/pause', admin('battle-pause'), (_req, res) => {
   pause(); emit('battle-pause');
   narrator.local(state.phase === 'paused' ? 'Batalha pausada.' : 'Batalha retomada.', { priority: 3, emotion: state.phase === 'paused' ? 'calm' : 'battle', eventType: 'round:paused' });
   ok(res);
 });
-app.post('/api/battle/end', admin('battle-end'), (_req, res) => { const winner = finish(); emit('battle-end', { winner }); ok(res); });
+app.post('/api/battle/end', admin('battle-end'), (_req, res) => { const winner = finish({ intermissionMs: cfg.intermissionMs }); emit('battle-end', { winner }); ok(res); });
 app.post('/api/battle/reset', admin('battle-reset'), (_req, res) => { reset(); emit('reset'); ok(res); });
 app.post('/api/test/players', admin('test-players'), (req, res) => { if (!cfg.mock) return res.status(403).json({ ok: false, error: 'test-mode-disabled' }); addBots(req.body.names || []); emit('players'); ok(res); });
 app.post('/api/storm', admin('storm'), (req, res) => {
@@ -126,17 +128,17 @@ app.post('/api/mock/gift', (_req, res) => res.status(410).json({ ok: false, erro
 app.post('/api/mock/comment', admin('mock-comment'), (req, res) => { if (!cfg.mock) return res.status(403).json({ ok: false, error: 'test-mode-disabled' }); chat({ ...req.body, user: { userId: req.body.user?.userId || 'mock-user', uniqueId: req.body.user?.uniqueId || req.body.username || 'mock' } }); ok(res); });
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'startrades-neon-royale', uptimeSeconds: Math.floor(process.uptime()) }));
-app.get('/api/config', (_req, res) => res.json({ username: cfg.username, mock: cfg.mock, model: cfg.model, adminConfigured: Boolean(cfg.adminToken), giftCatalog: state.giftCatalog }));
+app.get('/api/config', (_req, res) => res.json({ username: cfg.username, mock: cfg.mock, model: cfg.model, adminConfigured: Boolean(cfg.adminToken), countdownMs: cfg.countdownMs, intermissionMs: cfg.intermissionMs, giftCatalog: state.giftCatalog }));
 
 function autoFinish() {
   const alive = state.players.filter((p) => p.alive), joinedTeams = new Set(state.players.map((p) => p.team)), aliveTeams = new Set(alive.map((p) => p.team));
   const battleOver = state.settings.teamMode ? joinedTeams.size >= 2 && aliveTeams.size <= 1 : alive.length <= 1;
   if (state.phase === 'running' && state.players.length >= 2 && battleOver) {
-    const winner = finish(); emit('battle-end', { winner });
+    const winner = finish({ intermissionMs: cfg.intermissionMs }); emit('battle-end', { winner });
   }
 }
 let lastStateBroadcastAt = 0;
-setInterval(() => { const now = Date.now(); tickGame(now); autoFinish(); if (state.phase === 'running' && now - lastStateBroadcastAt >= 500) { lastStateBroadcastAt = now; emit('tick'); } }, 250).unref?.();
+setInterval(() => { const now = Date.now(); tickGame(now); autoFinish(); if (['countdown', 'running', 'ended'].includes(state.phase) && now - lastStateBroadcastAt >= 500) { lastStateBroadcastAt = now; emit('tick'); } }, 250).unref?.();
 setInterval(() => { tickStorm(); if (state.phase === 'running') emit('tick'); }, 7000).unref?.();
 
 let shuttingDown = false;

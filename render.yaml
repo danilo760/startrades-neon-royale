@@ -17,6 +17,10 @@ services:
         sync: false
       - key: TIKTOK_USERNAME
         value: startrades01
+      - key: BATTLE_COUNTDOWN_MS
+        value: "5000"
+      - key: BATTLE_INTERMISSION_MS
+        value: "10000"
       - key: TIKTOOL_API_KEY
         sync: false
       - key: ADMIN_TOKEN

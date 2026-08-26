@@ -222,6 +222,11 @@ export class GameScene extends Phaser.Scene {
     const title = this.add.text(640, 360, 'BATALHA INICIADA', { fontFamily: 'Arial', fontSize: '58px', fontStyle: 'bold italic', color: '#ffffff', stroke: '#a52cff', strokeThickness: 8 }).setOrigin(.5).setDepth(2500).setScale(.3).setAlpha(0);
     this.tweens.chain({ targets: title, tweens: [{ scale: 1.1, alpha: 1, duration: 420, ease: 'Back.easeOut' }, { scale: 1, duration: 700 }, { scale: 1.6, alpha: 0, duration: 360 }], onComplete: () => title.destroy() }); this.cameras.main.flash(350, 44, 239, 255); sfx('start');
   }
+  suddenDeath() {
+    const title = this.add.text(640, 250, 'MORTE SÚBITA', { fontFamily: 'Arial', fontSize: '62px', fontStyle: 'bold italic', color: '#ff426b', stroke: '#24000c', strokeThickness: 10 }).setOrigin(.5).setDepth(2500).setScale(.45).setAlpha(0);
+    this.tweens.chain({ targets: title, tweens: [{ scale: 1.08, alpha: 1, duration: 360, ease: 'Back.easeOut' }, { scale: 1, duration: 1000 }, { y: 205, alpha: 0, duration: 420 }], onComplete: () => title.destroy() });
+    this.cameras.main.flash(280, 255, 35, 75, false, undefined, .14); this.cameras.main.shake(380, .009); sfx('storm');
+  }
   battleEnd(winner) {
     const f = winner && this.fighters.get(winner.id), x = f?.container.x || 640, y = f?.container.y || 360; this.pooledBurst(x, y, 0x75ff4d, 30, 220); sfx('win');
   }

@@ -12,6 +12,9 @@ const GIFT_IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
 const PENDING_TTL_MS = 10 * 60 * 1000;
 const BASE_ATTACK_DAMAGE = 4;
 const ATTACK_COOLDOWN_MS = 850;
+const DEFAULT_COUNTDOWN_MS = 5000;
+const DEFAULT_INTERMISSION_MS = 10000;
+const SUDDEN_DEATH_STORM = 75;
 
 export const ARENA_BACKGROUNDS = ['default', 'cyberpunk', 'space', 'retro'];
 export const POWER_PRESETS = Object.freeze({ shot: { label: 'RAJADA ESTELAR', damage: BASE_ATTACK_DAMAGE, color: 0x2cefff, sound: 'shot' } });
@@ -21,6 +24,8 @@ const emptyBoss = () => ({ id: null, active: false, hp: 0, maxHp: 0, x: 640, y: 
 
 export const state = {
   phase: 'lobby', round: 1, storm: 0, likes: 0, players: [], feed: [], winner: null,
+  countdownEndsAt: 0, intermissionEndsAt: 0, roundStartedAt: 0,
+  suddenDeath: { active: false, startedAt: 0 },
   bountyTargetId: null, bountyTargetPlatformId: null, bountyClaimedBy: null,
   roundId: randomUUID(),
   teamScores: { blue: { score: 0, survivors: 0, eliminations: 0 }, red: { score: 0, survivors: 0, eliminations: 0 } },
@@ -140,10 +145,10 @@ export function join(username, teamChoice = null, bot = false, identity = {}) {
 
 export function addBots(names = []) { names.slice(0, 30).forEach((name) => join(name, null, true, { platformUserId: localStableId(name) })); return state; }
 
-export function start() {
+function activateRound(now = nowMs()) {
   const leader = getLeaderboardTop();
-  const now = nowMs();
-  state.phase = 'running'; state.winner = null; state.roundId = randomUUID();
+  state.phase = 'running'; state.winner = null; state.roundId = randomUUID(); state.countdownEndsAt = 0; state.intermissionEndsAt = 0; state.roundStartedAt = now;
+  state.suddenDeath = { active: false, startedAt: 0 };
   state.bountyTargetPlatformId = leader?.platformUserId || leader?.id || null;
   state.bountyTargetId = [...players.values()].find((p) => p.platformUserId === state.bountyTargetPlatformId)?.id || null;
   state.bountyClaimedBy = null; state.hazards = []; state.boss = emptyBoss(); state.bossCooldownUntil = 0;
@@ -171,7 +176,23 @@ export function start() {
   return state;
 }
 
-export function pause() { state.phase = state.phase === 'paused' ? 'running' : 'paused'; feed(state.phase === 'paused' ? 'Batalha pausada' : 'Batalha retomada', 'system'); return state; }
+export function start({ now = nowMs(), countdownMs = DEFAULT_COUNTDOWN_MS } = {}) {
+  if (state.phase !== 'lobby') return state;
+  const delay = clamp(Number(countdownMs) || 0, 0, 15000);
+  if (delay === 0) return activateRound(now);
+  state.phase = 'countdown'; state.winner = null; state.countdownEndsAt = now + delay; state.intermissionEndsAt = 0;
+  state.suddenDeath = { active: false, startedAt: 0 };
+  feed(`BATALHA COMEÇA EM ${Math.ceil(delay / 1000)}`, 'system');
+  publishEngineEvent('round:countdown', { round: state.round, countdownEndsAt: state.countdownEndsAt, durationMs: delay });
+  return state;
+}
+
+export function pause() {
+  if (state.phase === 'running') state.phase = 'paused';
+  else if (state.phase === 'paused') state.phase = 'running';
+  else return state;
+  feed(state.phase === 'paused' ? 'Batalha pausada' : 'Batalha retomada', 'system'); return state;
+}
 export function setStorm(value) { state.storm = clamp(Number(value) || 0, 0, 100); feed(`Tempestade em ${state.storm}%`, 'storm'); return state; }
 export function updateSettings(next = {}) {
   if ('agentEnabled' in next) state.settings.agentEnabled = Boolean(next.agentEnabled);
@@ -639,13 +660,20 @@ function tickStormDamage(now) {
 }
 export function tickGame(now = nowMs()) {
   pruneProcessed(now); tickEffects(now);
+  if (state.phase === 'countdown' && state.countdownEndsAt > 0 && now >= state.countdownEndsAt) activateRound(now);
   if (state.phase === 'running') { tickMovement(now); tickPlayerCombat(now); tickHazards(now); tickBoss(now); tickStormDamage(now); }
+  if (state.phase === 'running' && !state.suddenDeath.active && players.size >= 3 && activePlayers().length === 2) {
+    state.suddenDeath = { active: true, startedAt: now }; state.storm = Math.max(state.storm, SUDDEN_DEATH_STORM);
+    feed('MORTE SÚBITA: RESTAM DOIS COMBATENTES', 'storm');
+    publishEngineEvent('round:sudden-death', { roundId: state.roundId, startedAt: now, playerIds: activePlayers().map((p) => p.id), storm: state.storm });
+  }
+  if (state.phase === 'ended' && state.intermissionEndsAt > 0 && now >= state.intermissionEndsAt) reset({ preservePlayers: true });
   sync(); return state;
 }
 
-export function finish() {
+export function finish({ now = nowMs(), intermissionMs = DEFAULT_INTERMISSION_MS } = {}) {
   if (state.boss.active) clearBoss('round-ended', { reward: false });
-  state.hazards = []; state.phase = 'ended'; sync();
+  state.hazards = []; state.phase = 'ended'; state.countdownEndsAt = 0; state.intermissionEndsAt = now + clamp(Number(intermissionMs) || 0, 0, 60000); sync();
   if (state.settings.teamMode && players.size > 0) {
     const blue = { type: 'team', team: 'blue', label: 'TIME AZUL', ...state.teamScores.blue };
     const red = { type: 'team', team: 'red', label: 'TIME VERMELHO', ...state.teamScores.red };
@@ -666,16 +694,22 @@ export function finish() {
       teamMode: state.settings.teamMode,
       winner: state.winner ? { ...state.winner } : null,
       teamScores: { blue: { ...state.teamScores.blue }, red: { ...state.teamScores.red } },
+      intermissionEndsAt: state.intermissionEndsAt,
       standings: state.players.map((p) => ({ id: p.id, username: p.username, score: p.score, eliminations: p.eliminations, alive: p.alive, hp: p.hp, team: p.team })),
     });
   }
   return state.winner;
 }
 
-export function reset() {
-  players.clear(); roundRecorded = false; roundGiftCount = 0;
+export function reset({ preservePlayers = false } = {}) {
+  if (!preservePlayers) players.clear(); roundRecorded = false; roundGiftCount = 0;
   giftUsage.clear(); giftCooldowns.clear(); processedGiftIds.clear(); pendingGifts.clear(); combatCooldowns.clear(); bossAttackCooldowns.clear(); bossDamage.clear();
-  Object.assign(state, { phase: 'lobby', round: state.round + 1, roundId: randomUUID(), storm: 0, likes: 0, players: [], feed: [], winner: null, bountyTargetId: null, bountyTargetPlatformId: null, bountyClaimedBy: null, hazards: [], boss: emptyBoss(), bossCooldownUntil: 0, teamScores: { blue: { score: 0, survivors: 0, eliminations: 0 }, red: { score: 0, survivors: 0, eliminations: 0 } } });
+  if (preservePlayers) {
+    const now = nowMs();
+    for (const p of players.values()) Object.assign(p, { hp: p.maxHp, shield: 0, shieldUntil: 0, speedMultiplier: 1, speedBoostUntil: 0, hype: 0, starPowerUntil: 0, energy: 0, score: 0, eliminations: 0, alive: true, spawnInvulnerableUntil: 0, lastMoveAt: now, nextStormHitAt: 0 });
+  }
+  Object.assign(state, { phase: 'lobby', round: state.round + 1, roundId: randomUUID(), storm: 0, likes: 0, players: [], feed: [], winner: null, countdownEndsAt: 0, intermissionEndsAt: 0, roundStartedAt: 0, suddenDeath: { active: false, startedAt: 0 }, bountyTargetId: null, bountyTargetPlatformId: null, bountyClaimedBy: null, hazards: [], boss: emptyBoss(), bossCooldownUntil: 0, teamScores: { blue: { score: 0, survivors: 0, eliminations: 0 }, red: { score: 0, survivors: 0, eliminations: 0 } } });
+  sync();
   return state;
 }
 

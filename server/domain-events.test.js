@@ -10,6 +10,7 @@ const prepare = (teamMode = false) => {
   updateSettings({ teamMode, giftLimits: { perPlayerPerRound: 12, perRound: 120, pendingPerUser: 3, maxComboActivations: 2 } });
 };
 const add = (name, id, team) => join(name, team, false, { platformUserId: id });
+const startNow = () => start({ countdownMs: 0 });
 const captureEvents = () => {
   const events = [];
   const listener = (event) => events.push(event);
@@ -21,7 +22,7 @@ test('round lifecycle emits round:started and round:ended with score context', (
   prepare(); add('Alpha', 'a'); add('Bravo', 'b');
   const capture = captureEvents();
   try {
-    start();
+    startNow();
     const started = capture.events.find((event) => event.type === 'round:started');
     assert.ok(started); assert.equal(started.payload.roundId, state.roundId); assert.equal(started.payload.playerCount, 2);
     finish();
@@ -30,8 +31,21 @@ test('round lifecycle emits round:started and round:ended with score context', (
   } finally { capture.close(); }
 });
 
+test('countdown and sudden death publish typed lifecycle events', () => {
+  prepare(); const a = add('Alpha', 'a'); const b = add('Bravo', 'b'); const c = add('Charlie', 'c');
+  const capture = captureEvents();
+  try {
+    start({ now: 1000, countdownMs: 5000 });
+    assert.ok(capture.events.some((event) => event.type === 'round:countdown'));
+    tickGame(6000); [a, b, c].forEach((p) => __test.expireSpawnProtection(p.id)); __test.setPlayerHp('c', 4);
+    applyCombatResult({ attackerId: 'a', targetId: 'c', attackKind: 'shot' }); tickGame(7000);
+    const sudden = capture.events.find((event) => event.type === 'round:sudden-death');
+    assert.ok(sudden); assert.deepEqual(new Set(sudden.payload.playerIds), new Set(['a', 'b'])); assert.equal(sudden.payload.storm, 75);
+  } finally { capture.close(); }
+});
+
 test('combat elimination emits player:eliminated and bounty:claimed', () => {
-  prepare(); add('Leader', 'leader'); finish(); reset(); add('Leader', 'leader'); add('Hunter', 'hunter'); start();
+  prepare(); add('Leader', 'leader'); finish(); reset(); add('Leader', 'leader'); add('Hunter', 'hunter'); startNow();
   assert.equal(state.bountyTargetId, 'leader'); __test.expireSpawnProtection('leader'); __test.expireSpawnProtection('hunter'); __test.setPlayerHp('leader', 4);
   const capture = captureEvents();
   try {
@@ -45,7 +59,7 @@ test('combat elimination emits player:eliminated and bounty:claimed', () => {
 });
 
 test('tactical shield emits player:healed only for actual healing', () => {
-  prepare(); add('Alpha', 'u1'); start(); __test.setPlayerHp('u1', 50);
+  prepare(); add('Alpha', 'u1'); startNow(); __test.setPlayerHp('u1', 50);
   const capture = captureEvents();
   try {
     const result = applyGiftEffect({ eventId: 'heal-domain', senderUserId: 'u1', senderUsername: 'Alpha', giftId: 'neon-shield', giftName: 'Hat', repeatCount: 1, source: 'tiktok', now: 1000 });
@@ -56,7 +70,7 @@ test('tactical shield emits player:healed only for actual healing', () => {
 });
 
 test('boss emits boss:attacked for aggro changes and attack phases', () => {
-  prepare(); add('Alpha', 'u1'); add('Bravo', 'u2'); start(); spawnBoss({ now: 1000 });
+  prepare(); add('Alpha', 'u1'); add('Bravo', 'u2'); startNow(); spawnBoss({ now: 1000 });
   const capture = captureEvents();
   try {
     tickGame(9000);

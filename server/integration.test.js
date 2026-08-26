@@ -26,7 +26,7 @@ test('HTTP/WebSocket simulation covers admin auth, gift, boss, narrator fallback
   const base = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ['server/index.js'], {
     cwd: process.cwd(),
-    env: { ...process.env, PORT: String(port), MOCK_MODE: 'true', ADMIN_TOKEN: token, OLLAMA_URL: 'http://127.0.0.1:9', OLLAMA_TIMEOUT_MS: '500', AGENT_COOLDOWN_MS: '500', SUPABASE_URL: '', SUPABASE_SECRET_KEY: '' },
+    env: { ...process.env, PORT: String(port), MOCK_MODE: 'true', ADMIN_TOKEN: token, BATTLE_COUNTDOWN_MS: '0', BATTLE_INTERMISSION_MS: '10000', OLLAMA_URL: 'http://127.0.0.1:9', OLLAMA_TIMEOUT_MS: '500', AGENT_COOLDOWN_MS: '500', SUPABASE_URL: '', SUPABASE_SECRET_KEY: '' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let logs = '';

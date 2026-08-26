@@ -11,7 +11,8 @@ export function Overlay() {
   const host = useRef(null), sceneRef = useRef(null), giftTimer = useRef(null), activeGiftRef = useRef(null);
   const [state, setState] = useState({ players: [], feed: [], settings: {}, giftCatalog: [] });
   const [speech, setSpeech] = useState('Ative o áudio para ouvir o apresentador da arena.');
-  const [emotion, setEmotion] = useState('hype'), [audio, setAudio] = useState(false), [connected, setConnected] = useState(false), [activeGift, setActiveGift] = useState(null);
+  const [emotion, setEmotion] = useState('hype'), [audio, setAudio] = useState(false), [connected, setConnected] = useState(false), [activeGift, setActiveGift] = useState(null), [clock, setClock] = useState(Date.now());
+  useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 200); return () => clearInterval(timer); }, []);
   useEffect(() => {
     prepareSpeech();
     const bridge = { unlock: () => {} };
@@ -34,8 +35,9 @@ export function Overlay() {
         if (event.type === 'gift:pending') showGift({ ...event.payload, status: 'pending' });
         if (event.type === 'gift:rejected' && event.payload?.visualOnly) showGift({ ...event.payload, status: 'neutral', giftName: event.payload.giftName || 'Gift desconhecido' });
         if (event.type === 'combat:shot') scene.renderCombatShot(event.payload);
-        if (event.type === 'battle-start') scene.battleStart();
-        if (event.type === 'battle-end') scene.battleEnd(event.payload?.winner);
+        if (event.type === 'round:started') scene.battleStart();
+        if (event.type === 'round:ended') scene.battleEnd(event.payload?.winner);
+        if (event.type === 'round:sudden-death') scene.suddenDeath();
         if (event.type === 'storm') scene.stormSurge(event.payload?.value ?? next?.storm ?? 0);
         if (event.type === 'like' && event.payload?.bonus) scene.likeBurst();
         if (event.type === 'agent') {
@@ -64,6 +66,8 @@ export function Overlay() {
   const blue = state.teamScores?.blue || { score: 0, survivors: 0 }, red = state.teamScores?.red || { score: 0, survivors: 0 };
   const winnerLabel = state.winner?.type === 'team' ? state.winner.label : state.winner?.username ? `@${state.winner.username}` : '';
   const boss = state.boss || {};
+  const countdown = Math.max(0, Math.ceil(((state.countdownEndsAt || 0) - clock) / 1000));
+  const intermission = Math.max(0, Math.ceil(((state.intermissionEndsAt || 0) - clock) / 1000));
   const giftText = activeGift?.status === 'applied'
     ? `@${activeGift.senderUsername} enviou ${activeGift.giftName}${activeGift.repeatCount > 1 ? ` x${activeGift.repeatCount}` : ''} — efeito ativado em @${activeGift.targetUsername}`
     : activeGift?.status === 'pending'
@@ -73,6 +77,8 @@ export function Overlay() {
     <div className="broadcastFrame"/>
     <header className="overlayHeader"><div className="overlayBrand"><span className="brandMark">S</span><div><small>@STARTRADES01 APRESENTA</small><h1>NEON <em>ROYALE</em></h1></div></div><div className="liveCluster"><span className={`serverDot ${connected ? 'online' : ''}`}/><div className={`live ${state.phase}`}><i/> {String(state.phase || 'lobby').toUpperCase()}</div></div></header>
     {state.settings?.teamMode && <section className="teamScoreboard"><div className="blueTeam"><small>TIME AZUL</small><strong>{blue.survivors}</strong><span>{blue.score} PTS</span></div><b>VS</b><div className="redTeam"><small>TIME VERMELHO</small><strong>{red.survivors}</strong><span>{red.score} PTS</span></div></section>}
+    {state.phase === 'countdown' && <section className="phaseBanner countdownBanner"><small>PREPARE-SE</small><strong>{countdown || 'GO'}</strong><span>A batalha vai começar</span></section>}
+    {state.suddenDeath?.active && state.phase === 'running' && <section className="suddenBadge">MORTE SÚBITA</section>}
     <div className="game" ref={host}/>
     <section className="hud">
       <div><span>COMBATENTES</span><strong>{alive.length}<small>/{state.players.length}</small></strong></div><div><span>RODADA</span><strong>#{state.round || 1}</strong></div><div className={state.storm >= 60 ? 'dangerStat' : ''}><span>TEMPESTADE</span><strong>{state.storm || 0}%</strong><i><b style={{ width: `${state.storm || 0}%` }}/></i></div><div><span>{boss.active ? 'COLOSSUS' : 'META DE LIKES'}</span><strong>{boss.active ? Math.ceil(boss.hp || 0) : state.likes || 0}<small>/{boss.active ? boss.maxHp || 0 : 500}</small></strong></div>
@@ -82,6 +88,6 @@ export function Overlay() {
     <section className={`agent emotion-${emotion}`}><div className="agentOrb"><span>N</span><i/><i/><i/></div><div><small>APRESENTADOR NOVA</small><p>{speech}</p></div>{!audio && <button onClick={enable}>ATIVAR SOM</button>}</section>
     {activeGift && <section className="powerBanner" style={{ '--power': tierColor(activeGift) }}><span>{activeGift.tier === 'premium' ? '✦' : activeGift.status === 'neutral' ? '·' : '◆'}</span><div><small>{activeGift.status === 'pending' ? 'GIFT PENDENTE' : activeGift.status === 'neutral' ? 'GIFT RECEBIDO' : 'INTERAÇÃO DA LIVE'}</small><strong>{giftText}</strong><em>{activeGift.source === 'control-panel' ? 'SIMULAÇÃO • NÃO É RECEITA REAL' : 'TIKTOK LIVE'}</em></div><b>{activeGift.tier === 'premium' ? 'PREMIUM' : 'GIFT'}</b></section>}
     {state.phase === 'lobby' && <div className="callout"><small>ENTRE NA PRÓXIMA BATALHA</small><b>Digite <em>!entrar</em></b><span>Gifts ativam efeitos de entretenimento sem prêmio real</span><i/></div>}
-    {state.winner && <div className={`winner team-${state.winner.team || 'solo'}`}><div className="winnerCrown">✦</div><small>{state.winner.type === 'team' ? 'EQUIPE CAMPEÃ' : 'CAMPEÃO'} DA RODADA {state.round}</small><strong>{winnerLabel}</strong><span>{state.winner.survivors != null ? `${state.winner.survivors} sobreviventes • ` : ''}{state.winner.eliminations} eliminações • {state.winner.score} pontos</span><div className="winnerLine"/></div>}
+    {state.winner && <div className={`winner team-${state.winner.team || 'solo'}`}><div className="winnerCrown">✦</div><small>{state.winner.type === 'team' ? 'EQUIPE CAMPEÃ' : 'CAMPEÃO'} DA RODADA {state.round}</small><strong>{winnerLabel}</strong><span>{state.winner.survivors != null ? `${state.winner.survivors} sobreviventes • ` : ''}{state.winner.eliminations} eliminações • {state.winner.score} pontos</span>{state.phase === 'ended' && <em>PRÓXIMA RODADA EM {intermission}s</em>}<div className="winnerLine"/></div>}
   </main>;
 }

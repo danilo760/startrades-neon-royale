@@ -23,6 +23,7 @@ Battle Royale 2D visto de cima para TikTok LIVE, com backend Node/Express/WS aut
 - Meteoro: alvo neutro escolhido pelo servidor, área telegrafada e dano não letal.
 - Star Power: Hype + aura dourada por até 60 segundos, sem multiplicar score competitivo.
 - Colossus Neon cooperativo e autoritativo.
+- Contagem regressiva autoritativa, morte súbita nos dois finalistas e intervalo automático entre rodadas.
 - Painel administrativo protegido por `ADMIN_TOKEN`.
 - Narrador com prioridade, TTL, fallback e limite programático de 16 palavras.
 
@@ -67,6 +68,8 @@ MOCK_MODE=
 ```
 
 `MOCK_MODE=true` mantém o simulador administrativo. `MOCK_MODE=false` habilita o conector real e exige `TIKTOOL_API_KEY` válida.
+
+`BATTLE_COUNTDOWN_MS` controla a contagem regressiva (padrão 5000 ms) e `BATTLE_INTERMISSION_MS` controla a tela do vencedor antes da próxima lobby (padrão 10000 ms).
 
 O `render.yaml` declara essas variáveis com `sync: false`, portanto os valores existentes no Render permanecem fora do repositório.
 
