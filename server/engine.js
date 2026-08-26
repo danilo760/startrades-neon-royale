@@ -159,7 +159,16 @@ export function start() {
     feed(`CAÇADA ATIVA: @${target?.username || 'líder'} vale pontuação tripla`, 'bounty');
   }
   for (const player of players.values()) applyPendingForPlayer(player, now);
-  sync(); return state;
+  sync();
+  publishEngineEvent('round:started', {
+    roundId: state.roundId,
+    round: state.round,
+    teamMode: state.settings.teamMode,
+    bountyTargetId: state.bountyTargetId,
+    playerCount: state.players.length,
+    teamScores: { blue: { ...state.teamScores.blue }, red: { ...state.teamScores.red } },
+  });
+  return state;
 }
 
 export function pause() { state.phase = state.phase === 'paused' ? 'running' : 'paused'; feed(state.phase === 'paused' ? 'Batalha pausada' : 'Batalha retomada', 'system'); return state; }
@@ -233,9 +242,28 @@ function attackPlayer(attacker, target, { damage = BASE_ATTACK_DAMAGE, awardPoin
   if (result.eliminated) {
     attacker.eliminations++;
     feed(`@${attacker.username} eliminou @${target.username}`, 'elimination');
+    publishEngineEvent('player:eliminated', {
+      roundId: state.roundId,
+      attackerId: attacker.id,
+      attackerUsername: attacker.username,
+      targetId: target.id,
+      targetUsername: target.username,
+      reason,
+      bountyClaimed,
+      pointsAwarded: points,
+    });
     if (bountyClaimed) {
       state.bountyClaimedBy = attacker.id; state.bountyTargetId = null; state.bountyTargetPlatformId = null;
       feed(`@${attacker.username} conquistou a CAÇADA TRIPLA`, 'bounty');
+      publishEngineEvent('bounty:claimed', {
+        roundId: state.roundId,
+        attackerId: attacker.id,
+        attackerUsername: attacker.username,
+        targetId: target.id,
+        targetUsername: target.username,
+        pointsAwarded: points,
+        multiplier: 3,
+      });
     }
   }
   sync();
@@ -331,6 +359,20 @@ function applyResolvedGift({ gift, senderUserId, senderUsername, giftName, repea
   } else if (gift.effect === 'tactical-shield') {
     const heal = Math.min(15, targetPlayer.maxHp * 0.15, Math.max(0, targetPlayer.maxHp - targetPlayer.hp));
     targetPlayer.hp += heal;
+    if (heal > 0) {
+      publishEngineEvent('player:healed', {
+        roundId: state.roundId,
+        playerId: targetPlayer.id,
+        username: targetPlayer.username,
+        amount: heal,
+        hp: targetPlayer.hp,
+        maxHp: targetPlayer.maxHp,
+        source: 'gift',
+        giftId: gift.giftId,
+        senderUserId,
+        senderUsername: sanitizeDisplayName(senderUsername, 'fighter', 32),
+      });
+    }
     targetPlayer.shield = Math.max(targetPlayer.shield, Math.min(10, Math.max(1, gift.magnitude || 10)));
     targetPlayer.shieldUntil = Math.max(targetPlayer.shieldUntil || 0, now + Math.min(3000, Math.max(1000, gift.durationMs || 3000)));
     effectResult = { applied: true, heal, shield: targetPlayer.shield, durationMs: targetPlayer.shieldUntil - now };
@@ -498,10 +540,21 @@ function tickHazards(now) {
   for (const hazard of state.hazards) {
     if (hazard.type === 'meteor' && !hazard.resolved && now >= hazard.impactAt) {
       hazard.resolved = true;
+      const impactedPlayers = [];
       for (const player of activePlayers()) {
-        if (Math.hypot(player.x - hazard.x, player.y - hazard.y) <= hazard.radius) damagePlayer(player, hazard.damage, { allowElimination: false, now });
+        if (Math.hypot(player.x - hazard.x, player.y - hazard.y) > hazard.radius) continue;
+        const result = damagePlayer(player, hazard.damage, { allowElimination: false, now });
+        if (result.applied) impactedPlayers.push({ playerId: player.id, username: player.username, damage: result.damage, hp: player.hp });
       }
-      publishEngineEvent('boss:updated', { reason: 'meteor-impact', hazardId: hazard.id });
+      publishEngineEvent('meteor:impacted', {
+        hazardId: hazard.id,
+        targetPlayerId: hazard.targetPlayerId,
+        x: hazard.x,
+        y: hazard.y,
+        radius: hazard.radius,
+        damage: hazard.damage,
+        impactedPlayers,
+      });
     }
     if (now < hazard.expiresAt) keep.push(hazard);
   }
@@ -520,18 +573,52 @@ function tickBoss(now) {
   if (!boss.active) return;
   if (state.phase !== 'running') { clearBoss('round-ended', { reward: false }); return; }
   if (now >= boss.expiresAt) { clearBoss('expired', { reward: false }); return; }
-  const target = chooseBossTarget(); boss.targetPlayerId = target?.id || null;
+  const target = chooseBossTarget();
+  const previousTargetPlayerId = boss.targetPlayerId;
+  const nextTargetPlayerId = target?.id || null;
+  boss.targetPlayerId = nextTargetPlayerId;
+  if (previousTargetPlayerId !== nextTargetPlayerId) {
+    publishEngineEvent('boss:attacked', {
+      reason: 'aggro-changed',
+      bossId: boss.id,
+      previousTargetPlayerId,
+      targetPlayerId: nextTargetPlayerId,
+    });
+  }
   const dt = clamp((now - bossLastTickAt) / 1000, 0, 1); bossLastTickAt = now;
   if (target) {
     const dx = target.x - boss.x, dy = target.y - boss.y, d = Math.hypot(dx, dy) || 1;
     const step = Math.min(d, 42 * dt); boss.x = clamp(boss.x + dx / d * step, 90, 1190); boss.y = clamp(boss.y + dy / d * step, 90, 630);
   }
   if (boss.attack && now >= boss.attack.impactAt) {
-    for (const p of activePlayers()) if (Math.hypot(p.x - boss.attack.x, p.y - boss.attack.y) <= boss.attack.radius) damagePlayer(p, boss.attack.damage, { allowElimination: false, now });
-    boss.lastAttackAt = now; boss.attack = null; publishEngineEvent('boss:updated', { reason: 'attack-resolved', boss: { ...boss } });
+    const resolvedAttack = { ...boss.attack };
+    const impactedPlayerIds = [];
+    for (const p of activePlayers()) {
+      if (Math.hypot(p.x - resolvedAttack.x, p.y - resolvedAttack.y) > resolvedAttack.radius) continue;
+      const result = damagePlayer(p, resolvedAttack.damage, { allowElimination: false, now });
+      if (result.applied) impactedPlayerIds.push(p.id);
+    }
+    boss.lastAttackAt = now; boss.attack = null;
+    publishEngineEvent('boss:updated', { reason: 'attack-resolved', boss: { ...boss } });
+    publishEngineEvent('boss:attacked', {
+      reason: 'attack-resolved',
+      bossId: boss.id,
+      attackId: resolvedAttack.id,
+      targetPlayerId: resolvedAttack.targetPlayerId,
+      impactedPlayerIds,
+    });
   } else if (!boss.attack && target && now - boss.lastAttackAt >= 8000) {
     boss.attack = { id: randomUUID(), x: target.x, y: target.y, radius: 120, damage: 22, warnedAt: now, impactAt: now + 3000, targetPlayerId: target.id };
     publishEngineEvent('boss:updated', { reason: 'attack-warning', boss: { ...boss } });
+    publishEngineEvent('boss:attacked', {
+      reason: 'attack-warning',
+      bossId: boss.id,
+      attackId: boss.attack.id,
+      targetPlayerId: boss.attack.targetPlayerId,
+      impactAt: boss.attack.impactAt,
+      radius: boss.attack.radius,
+      damage: boss.attack.damage,
+    });
   }
   for (const p of activePlayers()) {
     if (Math.hypot(p.x - boss.x, p.y - boss.y) > 380) continue;
@@ -573,6 +660,14 @@ export function finish() {
   if (!roundRecorded) {
     recordRound([...players.values()].map((p) => ({ ...p, roundWinner: state.winner?.type === 'player' ? state.winner.id === p.id : state.winner?.team === p.team })), state.roundId);
     roundRecorded = true;
+    publishEngineEvent('round:ended', {
+      roundId: state.roundId,
+      round: state.round,
+      teamMode: state.settings.teamMode,
+      winner: state.winner ? { ...state.winner } : null,
+      teamScores: { blue: { ...state.teamScores.blue }, red: { ...state.teamScores.red } },
+      standings: state.players.map((p) => ({ id: p.id, username: p.username, score: p.score, eliminations: p.eliminations, alive: p.alive, hp: p.hp, team: p.team })),
+    });
   }
   return state.winner;
 }
