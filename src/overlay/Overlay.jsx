@@ -41,7 +41,15 @@ export function Overlay() {
         if (event.type === 'agent') {
           const currentSettings = next?.settings || {};
           setSpeech(event.payload.text); setEmotion(event.payload.emotion || 'hype');
-          speak(event.payload.text, { mode: currentSettings.voiceMode || 'male', emotion: event.payload.emotion || 'hype', intensity: currentSettings.voiceIntensity || 3, style: currentSettings.narratorStyle || 'explosive', priority: event.payload.priority });
+          speak(event.payload.text, {
+            mode: currentSettings.voiceMode || 'male',
+            emotion: event.payload.emotion || 'hype',
+            priority: event.payload.priority,
+            priorityLevel: event.payload.priorityLevel,
+            path: event.payload.path,
+            eventType: event.payload.eventType,
+            createdAt: event.payload.createdAt,
+          });
         }
       };
     };
@@ -50,7 +58,7 @@ export function Overlay() {
   const enable = () => {
     unlockAudio(); setAudio(true); setMusic(state.settings?.music !== false); setSound(state.settings?.sound !== false);
     const text = 'Som ativado! Prepare-se, porque a arena vai tremer!'; setSpeech(text); setEmotion('battle');
-    speak(text, { mode: state.settings?.voiceMode || 'male', emotion: 'battle', intensity: state.settings?.voiceIntensity || 3, style: state.settings?.narratorStyle || 'explosive', priority: true });
+    speak(text, { mode: state.settings?.voiceMode || 'male', emotion: 'battle', priority: true, eventType: 'audio:enabled' });
   };
   const alive = state.players.filter((p) => p.alive), feed = (state.feed || []).slice(0, 4);
   const blue = state.teamScores?.blue || { score: 0, survivors: 0 }, red = state.teamScores?.red || { score: 0, survivors: 0 };
