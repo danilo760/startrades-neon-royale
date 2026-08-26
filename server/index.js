@@ -85,6 +85,7 @@ if (!cfg.mock) {
 }
 
 const ok = (res) => res.json({ ok: true, state });
+const conflict = (res, error) => res.status(409).json({ ok: false, error, state });
 const admin = (action) => (req, res, next) => {
   const result = authorizeAdminRequest({ headers: req.headers, ip: req.ip, token: cfg.adminToken, action });
   if (!result.ok) return res.status(result.status).json({ ok: false, error: result.reason });
@@ -92,13 +93,24 @@ const admin = (action) => (req, res, next) => {
 };
 const adminLog = (data) => console.info('[admin]', JSON.stringify(sanitizedAdminLog(data)));
 
-app.post('/api/battle/start', admin('battle-start'), (_req, res) => { start({ countdownMs: cfg.countdownMs }); ok(res); });
+app.post('/api/battle/start', admin('battle-start'), (_req, res) => {
+  if (state.phase !== 'lobby') return conflict(res, 'battle-not-in-lobby');
+  start({ countdownMs: cfg.countdownMs }); ok(res);
+});
 app.post('/api/battle/pause', admin('battle-pause'), (_req, res) => {
-  pause(); emit('battle-pause');
+  if (!['running', 'paused'].includes(state.phase)) return conflict(res, 'battle-not-pausable');
+  const previousPhase = state.phase;
+  pause();
+  const changed = state.phase !== previousPhase;
+  if (!changed) return conflict(res, 'battle-not-pausable');
+  emit('battle-pause', { phase: state.phase });
   narrator.local(state.phase === 'paused' ? 'Batalha pausada.' : 'Batalha retomada.', { priority: 3, emotion: state.phase === 'paused' ? 'calm' : 'battle', eventType: 'round:paused' });
   ok(res);
 });
-app.post('/api/battle/end', admin('battle-end'), (_req, res) => { const winner = finish({ intermissionMs: cfg.intermissionMs }); emit('battle-end', { winner }); ok(res); });
+app.post('/api/battle/end', admin('battle-end'), (_req, res) => {
+  if (!['countdown', 'running', 'paused'].includes(state.phase)) return conflict(res, 'battle-not-active');
+  const winner = finish({ intermissionMs: cfg.intermissionMs }); emit('battle-end', { winner }); ok(res);
+});
 app.post('/api/battle/reset', admin('battle-reset'), (_req, res) => { reset(); emit('reset'); ok(res); });
 app.post('/api/test/players', admin('test-players'), (req, res) => { if (!cfg.mock) return res.status(403).json({ ok: false, error: 'test-mode-disabled' }); addBots(req.body.names || []); emit('players'); ok(res); });
 app.post('/api/storm', admin('storm'), (req, res) => {

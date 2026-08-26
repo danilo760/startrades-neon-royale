@@ -32,13 +32,37 @@ test('last two fighters trigger sudden death and raise the storm once', () => {
   const startedAt = state.suddenDeath.startedAt; tickGame(3000); assert.equal(state.suddenDeath.startedAt, startedAt);
 });
 
-test('intermission returns to lobby while preserving and restoring the roster', () => {
+test('team mode does not trigger sudden death after one team already owns both survivors', () => {
+  prepare(true);
+  const a = add('Alpha', 'a', 'azul'), b = add('Bravo', 'b', 'azul'), c = add('Charlie', 'c', 'vermelho'), d = add('Delta', 'd', 'vermelho');
+  startNow(); [a, b, c, d].forEach((p) => __test.expireSpawnProtection(p.id));
+  __test.setPlayerAlive('c', false); __test.setPlayerAlive('d', false); tickGame(2000);
+  assert.equal(state.suddenDeath.active, false); assert.equal(state.storm, 0);
+});
+
+test('intermission returns to lobby, publishes round:lobby and preserves the restored roster', () => {
   prepare(); add('Alpha', 'a'); add('Bravo', 'b'); startNow(); __test.setPlayerHp('a', 12); __test.setPlayerAlive('b', false);
-  finish({ now: 5000, intermissionMs: 10000 });
-  assert.equal(state.phase, 'ended'); assert.equal(state.intermissionEndsAt, 15000);
-  tickGame(14999); assert.equal(state.phase, 'ended');
-  tickGame(15000); assert.equal(state.phase, 'lobby'); assert.equal(state.players.length, 2);
-  for (const player of state.players) { assert.equal(player.alive, true); assert.equal(player.hp, player.maxHp); assert.equal(player.score, 0); }
+  const lobbyEvents = [];
+  const onLobby = (payload) => lobbyEvents.push(payload);
+  eventBus.on('round:lobby', onLobby);
+  try {
+    finish({ now: 5000, intermissionMs: 10000 });
+    assert.equal(state.phase, 'ended'); assert.equal(state.intermissionEndsAt, 15000);
+    tickGame(14999); assert.equal(state.phase, 'ended');
+    tickGame(15000); assert.equal(state.phase, 'lobby'); assert.equal(state.players.length, 2); assert.equal(lobbyEvents.length, 1);
+    assert.equal(lobbyEvents[0].playerCount, 2);
+    for (const player of state.players) { assert.equal(player.alive, true); assert.equal(player.hp, player.maxHp); assert.equal(player.score, 0); }
+  } finally { eventBus.off('round:lobby', onLobby); }
+});
+
+test('automatic intermission preserves a pending gift inbox until the next round', () => {
+  prepare(); add('Other', 'u2'); startNow();
+  const pending = gift({ eventId: 'pending-cross-round', senderUserId: 'outside', senderUsername: 'Outside', now: 1000 });
+  assert.equal(pending.status, 'pending'); assert.equal(__test.pendingGifts.get('outside').length, 1);
+  finish({ now: 2000, intermissionMs: 100 }); tickGame(2100);
+  assert.equal(state.phase, 'lobby'); assert.equal(__test.pendingGifts.get('outside').length, 1);
+  join('Outside', null, false, { platformUserId: 'outside' }); startNow();
+  assert.equal(__test.pendingGifts.has('outside'), false); assert.equal(state.players.find((p) => p.id === 'outside').speedMultiplier, 1.2);
 });
 
 test('friendly fire only blocked in team mode and server computes damage', () => {

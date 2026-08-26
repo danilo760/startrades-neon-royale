@@ -662,12 +662,18 @@ export function tickGame(now = nowMs()) {
   pruneProcessed(now); tickEffects(now);
   if (state.phase === 'countdown' && state.countdownEndsAt > 0 && now >= state.countdownEndsAt) activateRound(now);
   if (state.phase === 'running') { tickMovement(now); tickPlayerCombat(now); tickHazards(now); tickBoss(now); tickStormDamage(now); }
-  if (state.phase === 'running' && !state.suddenDeath.active && players.size >= 3 && activePlayers().length === 2) {
+  const survivors = state.phase === 'running' ? activePlayers() : [];
+  const opposingTeamsRemain = !state.settings.teamMode || new Set(survivors.map((p) => p.team)).size >= 2;
+  if (state.phase === 'running' && !state.suddenDeath.active && players.size >= 3 && survivors.length === 2 && opposingTeamsRemain) {
     state.suddenDeath = { active: true, startedAt: now }; state.storm = Math.max(state.storm, SUDDEN_DEATH_STORM);
     feed('MORTE SÚBITA: RESTAM DOIS COMBATENTES', 'storm');
-    publishEngineEvent('round:sudden-death', { roundId: state.roundId, startedAt: now, playerIds: activePlayers().map((p) => p.id), storm: state.storm });
+    publishEngineEvent('round:sudden-death', { roundId: state.roundId, startedAt: now, playerIds: survivors.map((p) => p.id), storm: state.storm });
   }
-  if (state.phase === 'ended' && state.intermissionEndsAt > 0 && now >= state.intermissionEndsAt) reset({ preservePlayers: true });
+  if (state.phase === 'ended' && state.intermissionEndsAt > 0 && now >= state.intermissionEndsAt) {
+    const previousRound = state.round;
+    reset({ preservePlayers: true, preserveGiftInbox: true });
+    publishEngineEvent('round:lobby', { previousRound, round: state.round, playerCount: state.players.length });
+  }
   sync(); return state;
 }
 
@@ -701,9 +707,10 @@ export function finish({ now = nowMs(), intermissionMs = DEFAULT_INTERMISSION_MS
   return state.winner;
 }
 
-export function reset({ preservePlayers = false } = {}) {
+export function reset({ preservePlayers = false, preserveGiftInbox = false } = {}) {
   if (!preservePlayers) players.clear(); roundRecorded = false; roundGiftCount = 0;
-  giftUsage.clear(); giftCooldowns.clear(); processedGiftIds.clear(); pendingGifts.clear(); combatCooldowns.clear(); bossAttackCooldowns.clear(); bossDamage.clear();
+  giftUsage.clear(); giftCooldowns.clear(); combatCooldowns.clear(); bossAttackCooldowns.clear(); bossDamage.clear();
+  if (preserveGiftInbox) pruneProcessed(); else { processedGiftIds.clear(); pendingGifts.clear(); }
   if (preservePlayers) {
     const now = nowMs();
     for (const p of players.values()) Object.assign(p, { hp: p.maxHp, shield: 0, shieldUntil: 0, speedMultiplier: 1, speedBoostUntil: 0, hype: 0, starPowerUntil: 0, energy: 0, score: 0, eliminations: 0, alive: true, spawnInvulnerableUntil: 0, lastMoveAt: now, nextStormHitAt: 0 });

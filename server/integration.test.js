@@ -20,13 +20,13 @@ async function request(base, path, token, body = {}) {
   return { response, data };
 }
 
-test('HTTP/WebSocket simulation covers admin auth, gift, boss, narrator fallback and full round', { skip: !integrationEnabled, timeout: 20_000 }, async () => {
+test('HTTP/WebSocket simulation covers admin auth, lifecycle guards, gift, boss, narrator fallback and full round', { skip: !integrationEnabled, timeout: 20_000 }, async () => {
   const port = 4300 + Math.floor(Math.random() * 300);
   const token = 'integration-admin-token';
   const base = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ['server/index.js'], {
     cwd: process.cwd(),
-    env: { ...process.env, PORT: String(port), MOCK_MODE: 'true', ADMIN_TOKEN: token, BATTLE_COUNTDOWN_MS: '0', BATTLE_INTERMISSION_MS: '10000', OLLAMA_URL: 'http://127.0.0.1:9', OLLAMA_TIMEOUT_MS: '500', AGENT_COOLDOWN_MS: '500', SUPABASE_URL: '', SUPABASE_SECRET_KEY: '' },
+    env: { ...process.env, PORT: String(port), MOCK_MODE: 'true', ADMIN_TOKEN: token, BATTLE_COUNTDOWN_MS: '0', BATTLE_INTERMISSION_MS: '100', OLLAMA_URL: 'http://127.0.0.1:9', SUPABASE_URL: '', SUPABASE_SECRET_KEY: '' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let logs = '';
@@ -45,12 +45,17 @@ test('HTTP/WebSocket simulation covers admin auth, gift, boss, narrator fallback
     let result = await request(base, '/api/admin/gift', '', { targetPlayerId: 'x', giftId: '5655' });
     assert.equal(result.response.status, 401);
 
+    result = await request(base, '/api/battle/pause', token);
+    assert.equal(result.response.status, 409); assert.equal(result.data.error, 'battle-not-pausable');
+
     result = await request(base, '/api/test/players', token, { names: ['Nebula', 'CyberFox'] });
     assert.equal(result.response.status, 200); assert.equal(result.data.state.players.length, 2);
     const targetPlayerId = result.data.state.players[0].id;
 
     result = await request(base, '/api/battle/start', token);
     assert.equal(result.response.status, 200); assert.equal(result.data.state.phase, 'running');
+    result = await request(base, '/api/battle/start', token);
+    assert.equal(result.response.status, 409); assert.equal(result.data.error, 'battle-not-in-lobby');
 
     result = await request(base, '/api/admin/gift', token, { targetPlayerId, giftId: '5655', magnitude: 9999, durationMs: 999999, diamondCount: 999999 });
     assert.equal(result.response.status, 200); assert.equal(result.data.result.source, 'control-panel'); assert.equal(result.data.result.giftId, '5655');
@@ -67,10 +72,17 @@ test('HTTP/WebSocket simulation covers admin auth, gift, boss, narrator fallback
     assert.equal(result.response.status, 200); assert.equal(result.data.state.phase, 'ended'); assert.equal(result.data.state.boss.active, false);
 
     const deadline = Date.now() + 4000;
-    while (Date.now() < deadline && (!events.some((e) => e.type === 'gift:applied') || !events.some((e) => e.type === 'boss:spawned') || !events.some((e) => e.type === 'battle-end') || !events.some((e) => e.type === 'agent' && e.payload?.fallback))) await sleep(50);
+    while (Date.now() < deadline && (
+      !events.some((e) => e.type === 'gift:applied') ||
+      !events.some((e) => e.type === 'boss:spawned') ||
+      !events.some((e) => e.type === 'battle-end') ||
+      !events.some((e) => e.type === 'round:lobby' && e.state?.phase === 'lobby') ||
+      !events.some((e) => e.type === 'agent' && e.payload?.fallback)
+    )) await sleep(50);
     assert.ok(events.some((e) => e.type === 'gift:applied'));
     assert.ok(events.some((e) => e.type === 'boss:spawned'));
     assert.ok(events.some((e) => e.type === 'battle-end'));
+    assert.ok(events.some((e) => e.type === 'round:lobby' && e.state?.phase === 'lobby'));
     const fallback = events.find((e) => e.type === 'agent' && e.payload?.fallback);
     assert.ok(fallback, `expected narrator fallback; logs=${logs.slice(-800)}`);
     assert.ok(String(fallback.payload.text).trim().split(/\s+/).length <= 16);

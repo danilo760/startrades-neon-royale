@@ -9,7 +9,18 @@ let retryTimer = null, retryAttempt = 0, flushing = false;
 const cleanId = (value = '') => String(value).trim().slice(0, 64);
 const cleanName = (value = 'fighter') => String(value).replace(/[\r\n<>]/g, '').trim().slice(0, 40) || 'fighter';
 const sorted = () => [...totals.values()].sort((a, b) => b.score - a.score || b.wins - a.wins || a.username.localeCompare(b.username, 'pt-BR'));
-const timeout = (promise) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('Supabase timeout')), TIMEOUT_MS))]);
+const timeout = async (promise) => {
+  let timer = null;
+  try {
+    const timeoutPromise = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Supabase timeout')), TIMEOUT_MS);
+      timer.unref?.();
+    });
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
 
 function applyLocal(item) {
   const previous = totals.get(item.platformUserId) || { id: item.platformUserId, platformUserId: item.platformUserId, username: item.username, score: 0, wins: 0, roundsPlayed: 0 };
