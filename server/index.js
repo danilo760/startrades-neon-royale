@@ -18,7 +18,11 @@ async function agent(context, force = false) {
   try {
     const r = await fetch(`${cfg.ollama}/api/generate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: cfg.model, stream: false, prompt: `Você é NOVA, narrador masculino do Battle Royale StarTrades. Responda em português brasileiro com muita energia e no máximo 16 palavras. Não prometa prêmio, não peça dinheiro, não repita insultos ou dados pessoais. Evento: ${context}` }) });
     if (!r.ok) throw new Error(`HTTP ${r.status}`); const data = await r.json(); const text = String(data.response || '').replace(/[*#]/g, '').trim().slice(0, 180); if (text) emit('agent', { text });
-  } catch (e) { console.error('Ollama:', e.message); }
+  } catch (e) {
+    console.error('Ollama:', e.message);
+    const fallback = String(context).replace(/[\r\n]+/g, ' ').trim().slice(0, 140);
+    if (fallback) emit('agent', { text: `Atenção, arena! ${fallback}` });
+  }
 }
 
 function chat(e) { const username = e.user?.uniqueId || e.username || 'fighter'; const comment = e.comment || ''; const result = applyComment({ username, comment }); emit('comment', { username, comment, result }); if (result.kind === 'join') agent(`${username} entrou na arena.`); else if (/^(oi|olá|ola|como joga|!ajuda)$/i.test(comment.trim())) agent(`${username} perguntou: ${comment}. Diga que !entrar participa e presentes ativam poderes.`); }
