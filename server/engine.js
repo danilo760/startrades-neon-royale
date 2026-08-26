@@ -61,7 +61,7 @@ export function updateSettings(next = {}) {
   return state;
 }
 
-export function giftPower(diamonds = 1, name = '') {
+export function giftPower(diamonds = 1, name = '', mapping = state.settings.giftMapping) {
   const d = Math.max(1, Number(diamonds) || 1);
   const mapped = mapping?.[String(name || '').trim().toLowerCase()];
   const kind = mapped?.kind || (/universe|universo/i.test(name) || d >= 1000 ? 'meteor' : d >= 300 ? 'drone' : d >= 100 ? 'airstrike' : d >= 30 ? 'grenade' : d >= 10 ? 'supply' : d >= 5 ? 'shield' : 'shot');

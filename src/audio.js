@@ -67,9 +67,9 @@ export function speak(text, options = {}) {
   if (typeof options === 'string') options = { mode: options };
   if (!enabled || !('speechSynthesis' in window) || !text) return;
   const { mode = 'male', emotion = 'hype', intensity = 3, style = 'explosive', priority = false } = options;
-  const u = new SpeechSynthesisUtterance(text); const profile = emotionProfiles[emotion] || emotionProfiles.hype; const boost = (Number(intensity) - 2) * .035;
-  u.lang = 'pt-BR'; u.volume = 1; u.rate = clamp(profile.rate + boost + (style === 'esports' ? .03 : style === 'cinematic' ? -.04 : 0), .78, 1.28);
-  u.pitch = clamp((mode === 'female' ? 1.08 : .78) + profile.pitch + (style === 'cinematic' ? -.03 : 0), .55, 1.35);
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'pt-BR'; u.volume = 1; u.rate = 1.25; // ritmo de transmissão solicitado
+  u.pitch = mode === 'female' ? 1.3 : 1.1; // voz masculina padrão em 1.1, feminina com timbre mais alto
   const voices = window.speechSynthesis.getVoices().filter((v) => v.lang.toLowerCase().startsWith('pt'));
   const hint = mode === 'female' ? /female|femin|francisca|maria|luciana|helena/i : /male|mascul|antonio|antônio|daniel|felipe|ricardo/i;
   u.voice = voices.find((v) => hint.test(v.name)) || voices[mode === 'female' ? 0 : Math.max(0, voices.length - 1)] || null;

@@ -10,8 +10,22 @@ export class GameScene extends Phaser.Scene {
   preload() { this.load.spritesheet('fighters', '/assets/fighters-atlas.png', { frameWidth: 307, frameHeight: 307 }); }
   create() {
     this.cameras.main.setBackgroundColor('#05020b'); this.drawArena();
+    this.makeSparkTexture();
     this.input.on('pointerdown', () => this.bridge.unlock());
     if (this.pendingState) { const pending = this.pendingState; this.pendingState = null; this.syncState(pending); }
+  }
+  makeSparkTexture() {
+    const g = this.make.graphics({ x: 0, y: 0 }, false);
+    g.fillStyle(0xffffff, 1).fillCircle(8, 8, 8); g.generateTexture('spark', 16, 16); g.destroy();
+  }
+  burst(x, y, color, { quantity = 16, speed = 200, scale = .55, lifespan = 480, ring = false } = {}) {
+    if (!this.textures.exists('spark')) return;
+    const emitter = this.add.particles(x, y, 'spark', {
+      lifespan, speed: { min: speed * .4, max: speed }, scale: { start: scale, end: 0 }, alpha: { start: 1, end: 0 },
+      blendMode: 'ADD', tint: color,
+      emitZone: ring ? { type: 'edge', source: new Phaser.Geom.Circle(0, 0, 30) } : undefined,
+    }).setDepth(1400);
+    emitter.explode(quantity); this.time.delayedCall(lifespan + 80, () => emitter.destroy());
   }
   drawArena() {
     const bg = this.add.graphics().setDepth(-20);
@@ -83,8 +97,9 @@ export class GameScene extends Phaser.Scene {
   }
   triggerPower(event) {
     const f = this.fighters.get(event.playerId); if (!f) return; const { power } = event; this.powerAnnouncement(event);
+    if (['meteor', 'airstrike', 'grenade'].includes(power.kind)) this.cameras.main.shake(300, 0.015);
     this.cameras.main.flash(power.kind === 'meteor' ? 280 : 90, (power.color >> 16) & 255, (power.color >> 8) & 255, power.color & 255, false, undefined, .12);
-    if (power.kind === 'shield') { this.shieldEffect(f, power); return; }
+    if (power.kind === 'shield') { this.burst(f.container.x, f.container.y, power.color, { quantity: 22, speed: 110, scale: .5, lifespan: 650, ring: true }); this.shieldEffect(f, power); return; }
     if (power.kind === 'supply') { this.supplyEffect(f, power); return; }
     const targets = [...this.fighters.values()].filter((t) => t.data.alive && t.data.id !== event.playerId).sort((a, b) => Phaser.Math.Distance.Between(f.container.x, f.container.y, a.container.x, a.container.y) - Phaser.Math.Distance.Between(f.container.x, f.container.y, b.container.x, b.container.y));
     if (power.kind === 'drone') { if (targets[0]) this.droneEffect(f, targets[0], power); return; }
@@ -92,12 +107,12 @@ export class GameScene extends Phaser.Scene {
   }
   shieldEffect(f, power) {
     [0, 130, 260].forEach((delay) => this.time.delayedCall(delay, () => { const ring = this.add.circle(f.container.x, f.container.y, 25, power.color, .12).setStrokeStyle(5, power.color, .95).setDepth(900); this.tweens.add({ targets: ring, scale: 3.1, alpha: 0, duration: 720, ease: 'Sine.easeOut', onComplete: () => ring.destroy() }); }));
-    this.radialBurst(f.container.x, f.container.y, power.color, 16, 80); this.floatingText(f.container.x, f.container.y - 50, `+${power.shield} ESCUDO`, '#35eaff', 18); sfx('shield');
+    this.radialBurst(f.container.x, f.container.y, power.color, 16, 80); this.floatingText(f.container.x, f.container.y - 50, `+${power.shield} ESCUDO`, '#35eaff', 18); sfx(power.sound || 'shield');
   }
   supplyEffect(f, power) {
     const crate = this.add.container(f.container.x, -40, [this.add.rectangle(0, 0, 48, 40, 0x173c25).setStrokeStyle(3, power.color), this.add.text(0, 0, '+', { fontSize: '28px', fontStyle: 'bold', color: '#ffffff' }).setOrigin(.5)]).setDepth(1200);
     this.tweens.add({ targets: crate, y: f.container.y - 22, angle: 360, duration: 650, ease: 'Bounce.easeOut', onComplete: () => { this.radialBurst(crate.x, crate.y, power.color, 18, 70); crate.destroy(); } });
-    this.floatingText(f.container.x, f.container.y - 55, `+${power.heal} VIDA  +${power.shield} ESCUDO`, '#5dff70', 16); sfx('supply');
+    this.floatingText(f.container.x, f.container.y - 55, `+${power.heal} VIDA  +${power.shield} ESCUDO`, '#5dff70', 16); sfx(power.sound || 'supply');
   }
   droneEffect(attacker, target, power) {
     const drone = this.add.container(attacker.container.x, attacker.container.y - 82, [this.add.circle(0, 0, 14, 0x16071f).setStrokeStyle(3, power.color), this.add.triangle(0, 0, -18, 8, 0, -14, 18, 8, power.color, .9)]).setDepth(1200);
@@ -131,7 +146,7 @@ export class GameScene extends Phaser.Scene {
   impact(attacker, target, power) {
     const big = ['meteor', 'airstrike', 'grenade'].includes(power.kind), radius = power.kind === 'meteor' ? 105 : power.kind === 'airstrike' ? 70 : power.radius ? 58 : 28;
     const burst = this.add.circle(target.container.x, target.container.y, 9, power.color, .92).setDepth(999).setStrokeStyle(3, 0xffffff, .65); this.tweens.add({ targets: burst, scale: radius / 9, alpha: 0, duration: big ? 520 : 280, ease: 'Quad.easeOut', onComplete: () => burst.destroy() });
-    this.radialBurst(target.container.x, target.container.y, power.color, big ? 26 : 10, big ? 120 : 55); this.cameras.main.shake(power.kind === 'meteor' ? 480 : big ? 260 : 90, power.kind === 'meteor' ? .018 : big ? .009 : .0025); sfx('hit');
+    this.burst(target.container.x, target.container.y, power.color, { quantity: big ? 30 : 12, speed: big ? 320 : 160, scale: big ? .8 : .42, lifespan: big ? 620 : 420 }); this.radialBurst(target.container.x, target.container.y, power.color, big ? 26 : 10, big ? 120 : 55); if (!big) this.cameras.main.shake(90, .003); sfx('hit');
     let damage = power.damage || 0, shield = target.data.shield, hp = target.data.hp; const absorbed = Math.min(shield, damage); shield -= absorbed; damage -= absorbed; hp = Math.max(0, hp - damage); const eliminated = hp <= 0;
     target.data = { ...target.data, hp, shield, alive: !eliminated }; target.hp.width = 68 * hp / 100; target.shield.width = 68 * shield / 100;
     this.floatingText(target.container.x, target.container.y - 40, `-${power.damage || 0}`, '#ff668d', big ? 28 : 20);
