@@ -58,20 +58,21 @@ test('speed boost stays capped below pay-to-win extremes', () => {
   assert.equal(result.status, 'applied'); assert.equal(state.players[0].speedMultiplier, 1.35); assert.ok(state.players[0].speedBoostUntil <= 6000);
 });
 
-test('meteor is server-selected, telegraphed, spawn-safe, non-lethal and preserves boss:updated impact event', () => {
+test('meteor is server-selected, telegraphed, spawn-safe, non-lethal and emits meteor:impacted only', () => {
   prepare(); add('Alpha', 'u1'); add('Bravo', 'u2'); start(); __test.expireSpawnProtection('u1'); __test.expireSpawnProtection('u2');
   __test.setPlayerPosition('u1', 200, 200); __test.setPlayerPosition('u2', 900, 500); __test.setPlayerHp('u1', 12); __test.setPlayerHp('u2', 12);
-  const meteorImpacts = [];
-  const onBossUpdated = (payload) => { if (payload.reason === 'meteor-impact') meteorImpacts.push(payload); };
-  eventBus.on('boss:updated', onBossUpdated);
+  const meteorImpacts = [], legacyMeteorBossUpdates = [];
+  const onMeteorImpacted = (payload) => meteorImpacts.push(payload);
+  const onBossUpdated = (payload) => { if (payload.reason === 'meteor-impact') legacyMeteorBossUpdates.push(payload); };
+  eventBus.on('meteor:impacted', onMeteorImpacted); eventBus.on('boss:updated', onBossUpdated);
   try {
     const result = gift({ eventId: 'meteor', giftId: 'neon-meteor', giftName: 'Rocket', targetUserId: 'u2', now: 1000 });
     assert.equal(result.status, 'applied'); assert.equal(state.hazards.length, 1); assert.ok(state.hazards[0].impactAt - state.hazards[0].createdAt >= 1400);
     assert.ok(['u1','u2'].includes(result.result.hazardTargetPlayerId));
     tickGame(4000);
-    assert.equal(meteorImpacts.length, 1); assert.equal(meteorImpacts[0].reason, 'meteor-impact');
+    assert.equal(meteorImpacts.length, 1); assert.equal(meteorImpacts[0].hazardId, result.result.hazardId); assert.equal(legacyMeteorBossUpdates.length, 0);
     for (const p of state.players) { assert.equal(p.alive, true); assert.ok(p.hp >= 10); }
-  } finally { eventBus.off('boss:updated', onBossUpdated); }
+  } finally { eventBus.off('meteor:impacted', onMeteorImpacted); eventBus.off('boss:updated', onBossUpdated); }
 });
 
 test('star power grants hype and golden status but never multiplies competitive score', () => {
