@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { eventBus } from './event-bus.js';
 import { clearLeaderboard } from './leaderboard.js';
-import { __test, applyCombatResult, applyGiftEffect, drainEngineEvents, finish, join, reset, spawnBoss, start, state, tickGame, updateSettings } from './engine.js';
+import { __test, applyCombatResult, applyGiftEffect, finish, join, reset, spawnBoss, start, state, tickGame, updateSettings } from './engine.js';
 
 const prepare = (teamMode = false) => {
   clearLeaderboard(); reset(); updateSettings({ teamMode, giftLimits: { perPlayerPerRound: 12, perRound: 120, pendingPerUser: 3, maxComboActivations: 2 } });
@@ -57,14 +58,20 @@ test('speed boost stays capped below pay-to-win extremes', () => {
   assert.equal(result.status, 'applied'); assert.equal(state.players[0].speedMultiplier, 1.35); assert.ok(state.players[0].speedBoostUntil <= 6000);
 });
 
-test('meteor is server-selected, telegraphed, spawn-safe and non-lethal', () => {
+test('meteor is server-selected, telegraphed, spawn-safe, non-lethal and preserves boss:updated impact event', () => {
   prepare(); add('Alpha', 'u1'); add('Bravo', 'u2'); start(); __test.expireSpawnProtection('u1'); __test.expireSpawnProtection('u2');
   __test.setPlayerPosition('u1', 200, 200); __test.setPlayerPosition('u2', 900, 500); __test.setPlayerHp('u1', 12); __test.setPlayerHp('u2', 12);
-  const result = gift({ eventId: 'meteor', giftId: 'neon-meteor', giftName: 'Rocket', targetUserId: 'u2', now: 1000 });
-  assert.equal(result.status, 'applied'); assert.equal(state.hazards.length, 1); assert.ok(state.hazards[0].impactAt - state.hazards[0].createdAt >= 1400);
-  assert.ok(['u1','u2'].includes(result.result.hazardTargetPlayerId));
-  tickGame(4000);
-  for (const p of state.players) { assert.equal(p.alive, true); assert.ok(p.hp >= 10); }
+  const meteorImpacts = [];
+  const onBossUpdated = (payload) => { if (payload.reason === 'meteor-impact') meteorImpacts.push(payload); };
+  eventBus.on('boss:updated', onBossUpdated);
+  try {
+    const result = gift({ eventId: 'meteor', giftId: 'neon-meteor', giftName: 'Rocket', targetUserId: 'u2', now: 1000 });
+    assert.equal(result.status, 'applied'); assert.equal(state.hazards.length, 1); assert.ok(state.hazards[0].impactAt - state.hazards[0].createdAt >= 1400);
+    assert.ok(['u1','u2'].includes(result.result.hazardTargetPlayerId));
+    tickGame(4000);
+    assert.equal(meteorImpacts.length, 1); assert.equal(meteorImpacts[0].reason, 'meteor-impact');
+    for (const p of state.players) { assert.equal(p.alive, true); assert.ok(p.hp >= 10); }
+  } finally { eventBus.off('boss:updated', onBossUpdated); }
 });
 
 test('star power grants hype and golden status but never multiplies competitive score', () => {
@@ -103,10 +110,15 @@ test('boss is removed on round end without gift-linked economic reward', () => {
   prepare(); add('Alpha', 'u1'); start(); spawnBoss({ now: 1000 }); const before = state.players[0].score; finish(); assert.equal(state.boss.active, false); assert.equal(state.players[0].score, before);
 });
 
-test('boss retargets and escape gives no reward', () => {
-  prepare(); add('Alpha', 'u1'); add('Bravo', 'u2'); start(); spawnBoss({ now: 1000 }); drainEngineEvents(); tickGame(9000);
-  const firstTarget = state.boss.targetPlayerId; assert.ok(firstTarget); __test.setPlayerAlive(firstTarget, false); tickGame(10000); assert.notEqual(state.boss.targetPlayerId, firstTarget);
-  const scores = new Map(state.players.map((p) => [p.id, p.score])); tickGame(47000); assert.equal(state.boss.active, false); assert.ok(drainEngineEvents().some((e) => e.type === 'boss:escaped')); for (const p of state.players) assert.equal(p.score, scores.get(p.id));
+test('boss retargets and escape gives no reward through event bus', () => {
+  const escaped = [];
+  const onEscaped = (payload) => escaped.push(payload);
+  eventBus.on('boss:escaped', onEscaped);
+  try {
+    prepare(); add('Alpha', 'u1'); add('Bravo', 'u2'); start(); spawnBoss({ now: 1000 }); tickGame(9000);
+    const firstTarget = state.boss.targetPlayerId; assert.ok(firstTarget); __test.setPlayerAlive(firstTarget, false); tickGame(10000); assert.notEqual(state.boss.targetPlayerId, firstTarget);
+    const scores = new Map(state.players.map((p) => [p.id, p.score])); tickGame(47000); assert.equal(state.boss.active, false); assert.equal(escaped.length, 1); for (const p of state.players) assert.equal(p.score, scores.get(p.id));
+  } finally { eventBus.off('boss:escaped', onEscaped); }
 });
 
 test('map validation and configurable gift limits remain enforced', () => {
