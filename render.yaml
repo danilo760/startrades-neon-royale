@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: startrades-neon-royale
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/config
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: MOCK_MODE
+        value: "true"
+      - key: TIKTOK_USERNAME
+        value: startrades01
+      - key: TIKTOOL_API_KEY
+        sync: false
