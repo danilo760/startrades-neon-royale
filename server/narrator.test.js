@@ -37,4 +37,6 @@ test('epic gift uses slow path, sanitizes context and clamps Ollama output to si
     state: makeState(), ollamaUrl: 'http://ollama.invalid', model: 'test',
     fetchImpl: async (_url, options) => {
       capturedPrompt = JSON.parse(options.body).prompt;
-      return { ok: true, json: async () => ({ response: 'um dois três quatro cinco seis sete oito nove dez onze doze treze quatorze quinze dezesseis dez
+      return {
+        ok: true,
+        json: async () => ({ response: 'um dois três quatro cinco seis sete oito nove dez onze doze treze quatorze quinze dezesseis dez
