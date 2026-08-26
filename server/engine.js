@@ -2,9 +2,31 @@ const players = new Map();
 const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
 const clean = (v = 'fighter') => String(v).replace(/^@/, '').replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 24) || 'fighter';
 
+export const POWER_PRESETS = Object.fromEntries([
+  ['shot', { label: 'RAJADA ESTELAR', damage: 12, radius: 0, color: 0x75ff5b, sound: 'laser' }],
+  ['shield', { label: 'ESCUDO DE ENERGIA', shield: 32, color: 0x35eaff, sound: 'shield' }],
+  ['supply', { label: 'CAIXA DE SUPRIMENTOS', heal: 24, shield: 30, color: 0x5dff70, sound: 'heal' }],
+  ['grenade', { label: 'GRANADA DE PLASMA', damage: 22, radius: 120, color: 0xa14dff, sound: 'explosion' }],
+  ['airstrike', { label: 'ATAQUE AÉREO', damage: 28, radius: 180, color: 0xff334e, sound: 'airstrike' }],
+  ['drone', { label: 'DRONE CAÇADOR', damage: 34, radius: 0, color: 0xff4dff, sound: 'laser' }],
+  ['meteor', { label: 'METEORO LENDÁRIO', damage: 55, radius: 250, color: 0xffa12b, sound: 'explosion' }],
+]);
+const DEFAULT_GIFT_MAPPING = { rosa: { kind: 'shot' }, 'dedo em pistola': { kind: 'shot' }, gg: { kind: 'shield' }, boneca: { kind: 'supply' }, foguete: { kind: 'grenade' }, leão: { kind: 'airstrike' }, drone: { kind: 'drone' }, universo: { kind: 'meteor' } };
+
+export const POWER_CATALOG = [
+  { id: 'blast', min: 1, max: 4, sample: 1, giftExample: 'Rosa', kind: 'shot', icon: '✦', label: 'RAJADA ESTELAR', summary: 'Disparo de energia no adversário mais próximo', damage: 12, color: 0x75ff5b },
+  { id: 'shield', min: 5, max: 9, sample: 5, giftExample: 'Presente de 5 moedas', kind: 'shield', icon: '⬡', label: 'ESCUDO DE ENERGIA', summary: 'Adiciona 32 pontos de proteção', shield: 32, color: 0x35eaff },
+  { id: 'supply', min: 10, max: 29, sample: 10, giftExample: 'Presente de 10 moedas', kind: 'supply', icon: '✚', label: 'CAIXA DE SUPRIMENTOS', summary: 'Recupera vida e reforça o escudo', heal: 24, shield: 30, color: 0x5dff70 },
+  { id: 'grenade', min: 30, max: 99, sample: 30, giftExample: 'Presente de 30 moedas', kind: 'grenade', icon: '◉', label: 'GRANADA DE PLASMA', summary: 'Explosão concentrada de alto impacto', damage: 22, radius: 120, color: 0xa14dff },
+  { id: 'airstrike', min: 100, max: 299, sample: 100, giftExample: 'Presente de 100 moedas', kind: 'airstrike', icon: '⌖', label: 'ATAQUE AÉREO', summary: 'Marca e atinge até cinco combatentes', damage: 28, radius: 180, color: 0xff334e },
+  { id: 'drone', min: 300, max: 999, sample: 300, giftExample: 'Presente de 300 moedas', kind: 'drone', icon: '◆', label: 'DRONE CAÇADOR', summary: 'Persegue o alvo e dispara um laser pesado', damage: 34, color: 0xff4dff },
+  { id: 'meteor', min: 1000, max: null, sample: 1000, giftExample: 'Universo ou 1.000+ moedas', kind: 'meteor', icon: '☄', label: 'METEORO LENDÁRIO', summary: 'Evento cinematográfico com dano devastador', damage: 55, radius: 250, color: 0xffa12b },
+];
+
 export const state = {
   phase: 'lobby', round: 1, storm: 0, likes: 0, players: [], feed: [], winner: null,
-  settings: { agentEnabled: true, voiceMode: 'male', music: true, sound: true },
+  powerCatalog: POWER_CATALOG,
+  settings: { agentEnabled: true, voiceMode: 'male', voiceIntensity: 3, narratorStyle: 'explosive', music: true, sound: true, giftMapping: { ...DEFAULT_GIFT_MAPPING } },
 };
 
 const feed = (text, tone = 'info') => {
@@ -28,24 +50,31 @@ export function addBots(names = []) { names.slice(0, 30).forEach((n) => join(n, 
 export function start() { state.phase = 'running'; state.winner = null; feed(`RODADA ${state.round} INICIADA`, 'system'); return state; }
 export function pause() { state.phase = state.phase === 'paused' ? 'running' : 'paused'; feed(state.phase === 'paused' ? 'Batalha pausada' : 'Batalha retomada', 'system'); return state; }
 export function setStorm(value) { state.storm = clamp(Number(value) || 0, 0, 100); feed(`Tempestade em ${state.storm}%`, 'storm'); return state; }
-export function updateSettings(next = {}) { Object.assign(state.settings, Object.fromEntries(Object.entries(next).filter(([k]) => k in state.settings))); return state; }
+export function updateSettings(next = {}) {
+  const { giftMapping, removeGift, ...rest } = next;
+  Object.assign(state.settings, Object.fromEntries(Object.entries(rest).filter(([k]) => k in state.settings)));
+  if (giftMapping && typeof giftMapping === 'object') for (const [rawName, cfg] of Object.entries(giftMapping)) {
+    const key = String(rawName).trim().toLowerCase();
+    if (key && cfg && POWER_PRESETS[cfg.kind]) state.settings.giftMapping[key] = { kind: cfg.kind, ...(cfg.sound ? { sound: cfg.sound } : {}) };
+  }
+  if (removeGift) delete state.settings.giftMapping[String(removeGift).trim().toLowerCase()];
+  return state;
+}
 
 export function giftPower(diamonds = 1, name = '') {
   const d = Math.max(1, Number(diamonds) || 1);
-  if (/universe/i.test(name) || d >= 1000) return { kind: 'meteor', label: 'METEORO LENDÁRIO', damage: 55, radius: 250, color: 0xffa12b };
-  if (d >= 300) return { kind: 'drone', label: 'DRONE CAÇADOR', damage: 34, radius: 0, color: 0xff4dff };
-  if (d >= 100) return { kind: 'airstrike', label: 'ATAQUE AÉREO', damage: 28, radius: 180, color: 0xff334e };
-  if (d >= 30) return { kind: 'grenade', label: 'GRANADA DE PLASMA', damage: 22, radius: 120, color: 0xa14dff };
-  if (d >= 10) return { kind: 'supply', label: 'CAIXA DE SUPRIMENTOS', heal: 24, shield: 30, color: 0x5dff70 };
-  if (d >= 5) return { kind: 'shield', label: 'ESCUDO DE ENERGIA', shield: 32, color: 0x35eaff };
-  return { kind: 'shot', label: 'RAJADA ESTELAR', damage: 12, radius: 0, color: 0x75ff5b };
+  const mapped = mapping?.[String(name || '').trim().toLowerCase()];
+  const kind = mapped?.kind || (/universe|universo/i.test(name) || d >= 1000 ? 'meteor' : d >= 300 ? 'drone' : d >= 100 ? 'airstrike' : d >= 30 ? 'grenade' : d >= 10 ? 'supply' : d >= 5 ? 'shield' : 'shot');
+  const preset = POWER_PRESETS[kind] || POWER_PRESETS.shot;
+  const tier = POWER_CATALOG.find((power) => power.kind === kind) || POWER_CATALOG[0];
+  return { ...tier, ...preset, kind, ...(mapped?.sound ? { sound: mapped.sound } : {}) };
 }
 
 export function applyGift({ username, giftName = 'Presente', diamondCount = 1, repeatCount = 1 }) {
   const player = join(username);
   if (state.phase !== 'running' || !player.alive) return { ignored: true };
   const total = Math.max(1, Number(diamondCount) * Math.max(1, Number(repeatCount)));
-  const power = giftPower(total, giftName);
+  const power = giftPower(total, giftName, state.settings.giftMapping);
   player.score += total; player.energy = clamp(player.energy + Math.min(total, 40), 0, 100);
   if (power.heal) player.hp = clamp(player.hp + power.heal, 0, 100);
   if (power.shield) player.shield = clamp(player.shield + power.shield, 0, 100);
