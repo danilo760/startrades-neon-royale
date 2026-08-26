@@ -1,6 +1,7 @@
 import React, { Suspense, lazy } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
+import './cinematic.css';
 
 const Overlay = lazy(() =>
   import('./overlay/Overlay.jsx').then((module) => ({

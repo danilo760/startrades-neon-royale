@@ -1,9 +1,18 @@
 import Phaser from 'phaser';
 import { sfx } from '../audio.js';
+import { VFXManager } from './VFXManager.js';
+import { JuiceManager } from './JuiceManager.js';
 
-const DOT_POOL_SIZE = 140;
-const PROJECTILE_POOL_SIZE = 36;
+const PROJECTILE_POOL_SIZE = 42;
 const TEAM_COLORS = { blue: 0x35eaff, red: 0xff334e };
+const SKIN_COLORS = [0x2cefff, 0xff36d7, 0x75ff4d, 0xff8a2b];
+
+const phaseForBoss = (boss = {}) => {
+  const ratio = Number(boss.hp || 0) / Math.max(1, Number(boss.maxHp || 1));
+  if (ratio <= 0.33) return { id: 3, name: 'NÚCLEO CRÍTICO', color: 0xff315f };
+  if (ratio <= 0.66) return { id: 2, name: 'FÚRIA NEON', color: 0xff8a2b };
+  return { id: 1, name: 'DESPERTAR', color: 0xb34dff };
+};
 
 export class GameScene extends Phaser.Scene {
   constructor(bridge) {
@@ -11,255 +20,513 @@ export class GameScene extends Phaser.Scene {
     this.bridge = bridge;
     this.fighters = new Map();
     this.hazardViews = new Map();
-    this.lastSync = 0;
-    this.trailAt = 0;
+    this.lastBossPhase = 0;
   }
-  preload() { this.load.spritesheet('fighters', '/assets/fighters-atlas.png', { frameWidth: 307, frameHeight: 307 }); }
+
   create() {
     this.cameras.main.setBackgroundColor('#05020b');
     this.drawArena();
-    this.makeSparkTexture();
-    this.makePools();
+    this.vfx = new VFXManager(this);
+    this.juice = new JuiceManager(this);
+    this.makeProjectilePool();
     this.input.on('pointerdown', () => this.bridge.unlock?.());
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.cleanupScene());
-    if (this.pendingState) { const pending = this.pendingState; this.pendingState = null; this.syncState(pending); }
-  }
-  makeSparkTexture() {
-    if (this.textures.exists('spark')) return;
-    const g = this.make.graphics({ x: 0, y: 0 }, false);
-    g.fillStyle(0xffffff, 1).fillCircle(8, 8, 8); g.generateTexture('spark', 16, 16); g.destroy();
-  }
-  makePools() {
-    this.dotPool = Array.from({ length: DOT_POOL_SIZE }, () => this.add.circle(-100, -100, 4, 0xffffff, 1).setVisible(false).setActive(false).setDepth(1200));
-    this.projectilePool = Array.from({ length: PROJECTILE_POOL_SIZE }, () => this.add.circle(-100, -100, 6, 0xffffff, 1).setStrokeStyle(2, 0xffffff).setVisible(false).setActive(false).setDepth(1050));
-  }
-  acquire(pool) { return pool.find((item) => !item.active) || null; }
-  release(item) { if (!item) return; this.tweens.killTweensOf(item); item.setVisible(false).setActive(false).setPosition(-100, -100).setScale(1).setAlpha(1); }
-  pooledBurst(x, y, color, quantity = 16, distance = 80) {
-    for (let i = 0; i < Math.min(quantity, 30); i++) {
-      const dot = this.acquire(this.dotPool); if (!dot) break;
-      const angle = Math.PI * 2 * i / Math.max(1, quantity) + Phaser.Math.FloatBetween(-.18, .18);
-      dot.setPosition(x, y).setRadius(Phaser.Math.Between(2, 6)).setFillStyle(color, .95).setVisible(true).setActive(true).setScale(1).setAlpha(1);
-      this.tweens.add({ targets: dot, x: x + Math.cos(angle) * Phaser.Math.Between(distance * .5, distance), y: y + Math.sin(angle) * Phaser.Math.Between(distance * .5, distance), scale: 0, alpha: 0, duration: Phaser.Math.Between(330, 650), ease: 'Quad.easeOut', onComplete: () => this.release(dot) });
+    if (this.pendingState) {
+      const pending = this.pendingState;
+      this.pendingState = null;
+      this.syncState(pending);
     }
   }
+
+  makeProjectilePool() {
+    this.projectilePool = Array.from({ length: PROJECTILE_POOL_SIZE }, () => this.add.circle(-100, -100, 6, 0xffffff, 1)
+      .setStrokeStyle(2, 0xffffff)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setVisible(false)
+      .setActive(false)
+      .setDepth(1500));
+  }
+
+  acquireProjectile() {
+    return this.projectilePool.find((item) => !item.active) || null;
+  }
+
+  releaseProjectile(item) {
+    if (!item) return;
+    this.tweens.killTweensOf(item);
+    item.setVisible(false).setActive(false).setPosition(-100, -100).setScale(1).setAlpha(1);
+  }
+
   drawArena() {
     const bg = this.add.graphics().setDepth(-20);
     bg.fillGradientStyle(0x16072b, 0x090418, 0x05020b, 0x0d0520, 1).fillRect(0, 0, 1280, 720);
-    this.arenaTint = this.add.rectangle(640, 360, 1280, 720, 0x2c0f50, .08).setDepth(-19);
+    this.arenaTint = this.add.rectangle(640, 360, 1280, 720, 0x2c0f50, 0.08).setDepth(-19);
     for (let i = 0; i < 75; i++) {
-      const star = this.add.circle(Phaser.Math.Between(20, 1260), Phaser.Math.Between(15, 705), Phaser.Math.Between(1, 2), i % 4 ? 0x7257a8 : 0x2cefff, Phaser.Math.FloatBetween(.18, .55)).setDepth(-18);
-      this.tweens.add({ targets: star, alpha: Phaser.Math.FloatBetween(.08, .55), duration: Phaser.Math.Between(900, 2600), yoyo: true, repeat: -1 });
+      const star = this.add.circle(Phaser.Math.Between(20, 1260), Phaser.Math.Between(15, 705), Phaser.Math.Between(1, 2), i % 4 ? 0x7257a8 : 0x2cefff, Phaser.Math.FloatBetween(0.18, 0.55)).setDepth(-18);
+      this.tweens.add({ targets: star, alpha: Phaser.Math.FloatBetween(0.08, 0.55), duration: Phaser.Math.Between(900, 2600), yoyo: true, repeat: -1 });
     }
     const g = this.add.graphics().setDepth(-10);
-    g.fillStyle(0x0c0920, .96).fillRoundedRect(35, 35, 1210, 650, 32); g.lineStyle(1, 0x2cefff, .12);
+    g.fillStyle(0x0c0920, 0.96).fillRoundedRect(35, 35, 1210, 650, 32);
+    g.lineStyle(1, 0x2cefff, 0.12);
     for (let x = 70; x < 1240; x += 70) g.lineBetween(x, 55, x, 665);
     for (let y = 70; y < 670; y += 70) g.lineBetween(55, y, 1225, y);
-    g.lineStyle(2, 0xa84dff, .46).strokeRoundedRect(35, 35, 1210, 650, 32);
-    g.lineStyle(1, 0x2cefff, .28).strokeCircle(640, 360, 245).strokeCircle(640, 360, 410);
-    g.fillStyle(0x2cefff, .8); [[45,45],[1235,45],[45,675],[1235,675]].forEach(([x,y]) => g.fillCircle(x,y,4));
+    g.lineStyle(2, 0xa84dff, 0.46).strokeRoundedRect(35, 35, 1210, 650, 32);
+    g.lineStyle(1, 0x2cefff, 0.28).strokeCircle(640, 360, 245).strokeCircle(640, 360, 410);
     const points = Array.from({ length: 12 }, (_, i) => new Phaser.Geom.Point(Math.cos(i * Math.PI / 6) * (i % 2 ? 105 : 118), Math.sin(i * Math.PI / 6) * (i % 2 ? 105 : 118)));
-    const core = this.add.polygon(640, 360, points, 0x45106c, .08).setStrokeStyle(2, 0xa84dff, .22).setDepth(-8);
+    const core = this.add.polygon(640, 360, points, 0x45106c, 0.08).setStrokeStyle(2, 0xa84dff, 0.22).setDepth(-8);
     this.tweens.add({ targets: core, angle: 360, duration: 28000, repeat: -1 });
-    this.scan = this.add.rectangle(640, 55, 1160, 2, 0x2cefff, .08).setDepth(-7);
-    this.tweens.add({ targets: this.scan, y: 665, alpha: .22, duration: 4200, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
-    this.stormRing = this.add.graphics().setDepth(800); this.stormGlow = this.add.graphics().setDepth(-5);
+    this.scan = this.add.rectangle(640, 55, 1160, 2, 0x2cefff, 0.08).setDepth(-7);
+    this.tweens.add({ targets: this.scan, y: 665, alpha: 0.22, duration: 4200, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    this.stormRing = this.add.graphics().setDepth(800);
+    this.stormGlow = this.add.graphics().setDepth(-5);
   }
+
   syncState(state) {
-    if (!this.sys?.isActive()) { this.pendingState = state; return; }
+    if (!this.sys?.isActive()) {
+      this.pendingState = state;
+      return;
+    }
     this.state = state;
-    (state.players || []).forEach((p) => this.ensureFighter(p));
-    const activeIds = new Set((state.players || []).map((p) => p.id));
-    for (const [id, f] of this.fighters) if (!activeIds.has(id)) this.destroyFighter(id, f);
+    for (const player of state.players || []) this.ensureFighter(player);
+    const activeIds = new Set((state.players || []).map((player) => player.id));
+    for (const [id, fighter] of this.fighters) if (!activeIds.has(id)) this.destroyFighter(id, fighter);
     this.applyArenaTheme(state.settings?.arenaBackground);
     this.drawStorm(state.storm || 0);
     this.syncBoss(state.boss);
     this.syncHazards(state.hazards || []);
   }
-  ensureFighter(p) {
-    let f = this.fighters.get(p.id);
-    if (!f) {
-      const skinColor = [0x2cefff, 0xff36d7, 0x75ff4d, 0xff8a2b][p.skin % 4];
-      const shadow = this.add.ellipse(0, 19, 58, 20, 0x000000, .5);
-      const glow = this.add.circle(0, 9, 31, skinColor, .13).setStrokeStyle(1, skinColor, .45);
-      const teamAura = this.add.circle(0, 8, 37, 0x35eaff, .08).setStrokeStyle(3, 0x35eaff, .9).setVisible(false);
-      const starAura = this.add.circle(0, 7, 45, 0xffd24d, .08).setStrokeStyle(4, 0xffd24d, .95).setVisible(false);
-      const sprite = this.add.sprite(0, 0, 'fighters', (p.skin % 4) * 4).setScale(.25).setOrigin(.5, .72);
-      const avatarBase = this.add.circle(0, -4, 22, 0x2cefff, 1).setStrokeStyle(3, 0xffffff, .65);
-      const crown = this.add.text(0, -78, '👑', { fontSize: '25px' }).setOrigin(.5).setVisible(false);
-      const starBadge = this.add.text(0, -82, '★', { fontFamily: 'Arial', fontSize: '22px', fontStyle: 'bold', color: '#ffd24d', stroke: '#4a2500', strokeThickness: 4 }).setOrigin(.5).setVisible(false);
-      const name = this.add.text(0, -52, `@${p.username || p.id}`, { fontFamily: 'Arial', fontSize: '13px', fontStyle: 'bold', color: '#ffffff', stroke: '#05030c', strokeThickness: 5 }).setOrigin(.5);
-      const hpBg = this.add.rectangle(0, -34, 68, 8, 0x160f24).setStrokeStyle(1, 0xffffff, .12);
-      const hp = this.add.rectangle(-34, -34, 68, 6, 0x75ff4d).setOrigin(0, .5);
-      const shield = this.add.rectangle(-34, -25, 0, 4, 0x2cefff).setOrigin(0, .5);
-      const container = this.add.container(p.x, p.y, [shadow, glow, teamAura, starAura, sprite, avatarBase, crown, starBadge, name, hpBg, hp, shield]).setDepth(p.y).setScale(.15).setAlpha(0);
-      f = { container, sprite, avatarBase, glow, teamAura, starAura, starBadge, crown, name, hp, shield, data: p, wanderAt: 0, wasAlive: true, trailAt: 0, starTrailAt: 0 };
-      this.fighters.set(p.id, f);
+
+  ensureFighter(player) {
+    let fighter = this.fighters.get(player.id);
+    if (!fighter) {
+      const skinColor = SKIN_COLORS[player.skin % SKIN_COLORS.length];
+      const shadow = this.add.ellipse(0, 20, 62, 20, 0x000000, 0.5);
+      const glow = this.add.circle(0, -4, 35, skinColor, 0.12).setStrokeStyle(2, skinColor, 0.45).setBlendMode(Phaser.BlendModes.ADD);
+      const teamAura = this.add.circle(0, -4, 39, 0x35eaff, 0.06).setStrokeStyle(3, 0x35eaff, 0.9).setVisible(false).setBlendMode(Phaser.BlendModes.ADD);
+      const starAura = this.add.circle(0, -4, 47, 0xffd24d, 0.07).setStrokeStyle(4, 0xffd24d, 0.95).setVisible(false).setBlendMode(Phaser.BlendModes.ADD);
+      const ball = this.add.circle(0, -4, 24, skinColor, 1).setStrokeStyle(4, 0xffffff, 0.72);
+      const inner = this.add.circle(0, -4, 17, 0x0b0820, 0.35).setStrokeStyle(1, 0xffffff, 0.14);
+      const crown = this.add.text(0, -78, '👑', { fontSize: '25px' }).setOrigin(0.5).setVisible(false);
+      const starBadge = this.add.text(0, -82, '★', { fontFamily: 'Arial', fontSize: '22px', fontStyle: 'bold', color: '#ffd24d', stroke: '#4a2500', strokeThickness: 4 }).setOrigin(0.5).setVisible(false);
+      const name = this.add.text(0, -52, `@${player.username || player.id}`, { fontFamily: 'Arial', fontSize: '13px', fontStyle: 'bold', color: '#ffffff', stroke: '#05030c', strokeThickness: 5 }).setOrigin(0.5);
+      const hpBg = this.add.rectangle(0, -34, 68, 8, 0x160f24).setStrokeStyle(1, 0xffffff, 0.12);
+      const hp = this.add.rectangle(-34, -34, 68, 6, 0x75ff4d).setOrigin(0, 0.5);
+      const shield = this.add.rectangle(-34, -25, 0, 4, 0x2cefff).setOrigin(0, 0.5);
+      const container = this.add.container(player.x, player.y, [shadow, glow, teamAura, starAura, ball, inner, crown, starBadge, name, hpBg, hp, shield]).setDepth(player.y).setScale(0.2).setAlpha(0);
+      fighter = { container, glow, teamAura, starAura, starBadge, crown, ball, inner, name, hp, shield, data: player, wasAlive: true, trailAt: 0, starTrailAt: 0 };
+      this.fighters.set(player.id, fighter);
+      this.vfx.attachBloom(glow, 1.25);
+      this.vfx.attachBloom(ball, 0.85);
       this.tweens.add({ targets: crown, y: -85, duration: 700, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
       this.tweens.add({ targets: starBadge, y: -88, duration: 620, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
       this.tweens.add({ targets: container, scale: 1, alpha: 1, duration: 520, ease: 'Back.easeOut' });
-      this.pooledBurst(p.x, p.y, skinColor, 12, 55); sfx('join');
+      this.vfx.burst(player.x, player.y, skinColor, 14, 70);
+      sfx('join');
+    } else if (fighter.data) {
+      const previousHp = Number(fighter.data.hp || 0);
+      const nextHp = Number(player.hp || 0);
+      if (player.alive && nextHp < previousHp - 0.5) this.vfx.damageNumber(fighter.container.x, fighter.container.y - 38, previousHp - nextHp);
+      else if (player.alive && nextHp > previousHp + 0.5) this.vfx.damageNumber(fighter.container.x, fighter.container.y - 38, nextHp - previousHp, { heal: true });
     }
-    if (f.wasAlive && !p.alive) this.eliminationEffect(f);
-    const teamColor = TEAM_COLORS[p.team] || TEAM_COLORS.blue;
-    const starActive = Boolean(p.alive && p.starPowerUntil);
-    f.data = p; f.wasAlive = p.alive; f.name.setText(`@${p.username || p.id}${starActive ? ` • HYPE ${p.hype || 0}` : ''}`);
-    f.hp.width = 68 * (p.hp || 0) / Math.max(1, p.maxHp || 100); f.shield.width = 68 * Math.min(100, p.shield || 0) / 100;
-    f.teamAura.setFillStyle(teamColor, .08).setStrokeStyle(3, teamColor, .9).setVisible(Boolean(this.state?.settings?.teamMode && p.alive && !starActive));
-    f.starAura.setVisible(starActive); f.starBadge.setVisible(starActive);
-    f.avatarBase.setFillStyle(starActive ? 0xffd24d : this.state?.settings?.teamMode ? teamColor : 0x2cefff, 1);
-    f.crown.setVisible(Boolean(p.alive && this.state?.bountyTargetId === p.id));
-    if (p.avatarUrl && f.avatarLoadedUrl !== p.avatarUrl && f.avatarLoadingUrl !== p.avatarUrl) this.loadAvatar(f, p);
-    if (p.alive) f.container.setAlpha(1); return f;
+
+    if (fighter.wasAlive && !player.alive) this.eliminationEffect(fighter);
+    if (!fighter.wasAlive && player.alive) {
+      fighter.eliminating = false;
+      fighter.container.setAlpha(1).setScale(1).setAngle(0);
+    }
+    const teamColor = TEAM_COLORS[player.team] || TEAM_COLORS.blue;
+    const starActive = Boolean(player.alive && player.starPowerUntil);
+    const baseColor = starActive ? 0xffd24d : this.state?.settings?.teamMode ? teamColor : SKIN_COLORS[player.skin % SKIN_COLORS.length];
+    fighter.data = player;
+    fighter.wasAlive = player.alive;
+    fighter.name.setText(`@${player.username || player.id}${starActive ? ` • HYPE ${player.hype || 0}` : ''}`);
+    fighter.hp.width = 68 * Number(player.hp || 0) / Math.max(1, Number(player.maxHp || 100));
+    fighter.shield.width = 68 * Math.min(100, Number(player.shield || 0)) / 100;
+    fighter.teamAura.setFillStyle(teamColor, 0.06).setStrokeStyle(3, teamColor, 0.9).setVisible(Boolean(this.state?.settings?.teamMode && player.alive && !starActive));
+    fighter.starAura.setVisible(starActive);
+    fighter.starBadge.setVisible(starActive);
+    fighter.ball.setFillStyle(baseColor, 1);
+    fighter.crown.setVisible(Boolean(player.alive && this.state?.bountyTargetId === player.id));
+    if (player.avatarUrl && fighter.avatarLoadedUrl !== player.avatarUrl && fighter.avatarLoadingUrl !== player.avatarUrl) this.loadAvatar(fighter, player);
+    if (player.alive) fighter.container.setAlpha(1);
+    return fighter;
   }
+
   applyArenaTheme(name = 'default') {
-    const allowed = ['default', 'cyberpunk', 'space', 'retro'], next = allowed.includes(name) ? name : 'default';
-    if (this.currentArena === next) return; this.currentArena = next;
-    const palettes = { default: [0x2c0f50, .08], cyberpunk: [0xff1493, .12], space: [0x173b8f, .13], retro: [0xff7a18, .1] };
+    const allowed = ['default', 'cyberpunk', 'space', 'retro'];
+    const next = allowed.includes(name) ? name : 'default';
+    if (this.currentArena === next) return;
+    this.currentArena = next;
+    const palettes = { default: [0x2c0f50, 0.08], cyberpunk: [0xff1493, 0.12], space: [0x173b8f, 0.13], retro: [0xff7a18, 0.1] };
     this.arenaTint?.setFillStyle(...palettes[next]);
   }
-  loadAvatar(f, p) {
-    const hash = [...`${p.platformUserId || p.id}:${p.avatarUrl}`].reduce((n, c) => ((n * 31 + c.charCodeAt(0)) >>> 0), 7).toString(36), key = `avatar-${hash}`;
-    f.avatarLoadingUrl = p.avatarUrl; let finished = false;
-    const cleanup = () => { this.load.off(`filecomplete-image-${key}`, success); this.load.off('loaderror', failure); clearTimeout(timer); };
-    const failure = (file) => { if (file?.key && file.key !== key) return; if (finished) return; finished = true; cleanup(); f.avatarLoadingUrl = null; if (this.textures.exists(key)) this.textures.remove(key); };
+
+  loadAvatar(fighter, player) {
+    const hash = [...`${player.platformUserId || player.id}:${player.avatarUrl}`].reduce((n, c) => ((n * 31 + c.charCodeAt(0)) >>> 0), 7).toString(36);
+    const key = `avatar-${hash}`;
+    fighter.avatarLoadingUrl = player.avatarUrl;
+    let finished = false;
+    const cleanup = () => {
+      this.load.off(`filecomplete-image-${key}`, success);
+      this.load.off('loaderror', failure);
+      clearTimeout(timer);
+    };
+    const failure = (file) => {
+      if (file?.key && file.key !== key) return;
+      if (finished) return;
+      finished = true;
+      cleanup();
+      fighter.avatarLoadingUrl = null;
+      if (this.textures.exists(key)) this.textures.remove(key);
+    };
     const success = () => {
-      if (finished) return; finished = true; cleanup();
-      if (!this.fighters.has(p.id) || !this.textures.exists(key) || this.textures.get(key).key === '__MISSING') { f.avatarLoadingUrl = null; if (this.textures.exists(key)) this.textures.remove(key); return; }
-      f.avatar?.destroy(); f.avatarMaskGraphic?.destroy();
-      const image = this.add.image(0, -4, key).setDisplaySize(42, 42), maskGraphic = this.make.graphics({ add: false }); maskGraphic.fillStyle(0xffffff).fillCircle(0, -4, 21).setVisible(false);
-      f.container.add([image, maskGraphic]); image.setMask(maskGraphic.createGeometryMask()); f.avatar = image; f.avatarMaskGraphic = maskGraphic; f.avatarTextureKey = key; f.avatarLoadedUrl = p.avatarUrl; f.avatarLoadingUrl = null;
+      if (finished) return;
+      finished = true;
+      cleanup();
+      if (!this.fighters.has(player.id) || !this.textures.exists(key) || this.textures.get(key).key === '__MISSING') {
+        fighter.avatarLoadingUrl = null;
+        if (this.textures.exists(key)) this.textures.remove(key);
+        return;
+      }
+      fighter.avatar?.destroy();
+      fighter.avatarMaskGraphic?.destroy();
+      const image = this.add.image(0, -4, key).setDisplaySize(40, 40);
+      const maskGraphic = this.make.graphics({ add: false });
+      maskGraphic.fillStyle(0xffffff).fillCircle(0, -4, 20).setVisible(false);
+      fighter.container.addAt(image, 6);
+      fighter.container.add(maskGraphic);
+      image.setMask(maskGraphic.createGeometryMask());
+      fighter.avatar = image;
+      fighter.avatarMaskGraphic = maskGraphic;
+      fighter.avatarTextureKey = key;
+      fighter.avatarLoadedUrl = player.avatarUrl;
+      fighter.avatarLoadingUrl = null;
     };
     const timer = setTimeout(() => failure(), 5000);
-    this.load.once(`filecomplete-image-${key}`, success); this.load.on('loaderror', failure); this.load.image(key, p.avatarUrl); if (!this.load.isLoading()) this.load.start();
+    this.load.once(`filecomplete-image-${key}`, success);
+    this.load.on('loaderror', failure);
+    this.load.image(key, player.avatarUrl);
+    if (!this.load.isLoading()) this.load.start();
   }
-  destroyFighter(id, f) {
-    this.tweens.killTweensOf(f.container); this.tweens.killTweensOf(f.crown); this.tweens.killTweensOf(f.starBadge);
-    f.avatar?.clearMask(true); f.avatarMaskGraphic?.destroy(); f.container.destroy();
-    if (f.avatarTextureKey && this.textures.exists(f.avatarTextureKey)) this.textures.remove(f.avatarTextureKey);
+
+  destroyFighter(id, fighter) {
+    this.tweens.killTweensOf(fighter.container);
+    this.tweens.killTweensOf(fighter.crown);
+    this.tweens.killTweensOf(fighter.starBadge);
+    fighter.avatar?.clearMask(true);
+    fighter.avatarMaskGraphic?.destroy();
+    fighter.container.destroy();
+    if (fighter.avatarTextureKey && this.textures.exists(fighter.avatarTextureKey)) this.textures.remove(fighter.avatarTextureKey);
     this.fighters.delete(id);
   }
+
   drawStorm(value) {
-    this.stormRing.clear(); this.stormGlow.clear(); if (!value) return;
-    const radius = Math.max(90, 575 - value * 4.2), thickness = Math.min(150, 16 + value * 1.15);
-    this.stormGlow.lineStyle(thickness + 25, 0x6d17bb, .07 + value / 1600).strokeCircle(640, 360, radius);
-    this.stormRing.lineStyle(thickness, value > 70 ? 0xff2c88 : 0xa52cff, .2 + value / 420).strokeCircle(640, 360, radius);
-    this.stormRing.lineStyle(2, 0xffffff, .35).strokeCircle(640, 360, radius - thickness / 2);
+    this.stormRing.clear();
+    this.stormGlow.clear();
+    if (!value) return;
+    const radius = Math.max(90, 575 - value * 4.2);
+    const thickness = Math.min(150, 16 + value * 1.15);
+    this.stormGlow.lineStyle(thickness + 25, 0x6d17bb, 0.07 + value / 1600).strokeCircle(640, 360, radius);
+    this.stormRing.lineStyle(thickness, value > 70 ? 0xff2c88 : 0xa52cff, 0.2 + value / 420).strokeCircle(640, 360, radius);
+    this.stormRing.lineStyle(2, 0xffffff, 0.35).strokeCircle(640, 360, radius - thickness / 2);
   }
+
   floatingText(x, y, text, color = '#ffffff', size = 22) {
-    const label = this.add.text(x, y, text, { fontFamily: 'Arial', fontSize: `${size}px`, fontStyle: 'bold', color, stroke: '#09020f', strokeThickness: 6 }).setOrigin(.5).setDepth(1300).setScale(.7);
+    const label = this.add.text(x, y, text, { fontFamily: 'Arial', fontSize: `${size}px`, fontStyle: 'bold', color, stroke: '#09020f', strokeThickness: 6 }).setOrigin(0.5).setDepth(2300).setScale(0.7);
     this.tweens.add({ targets: label, y: y - 65, scale: 1.05, alpha: 0, duration: 850, ease: 'Cubic.easeOut', onComplete: () => label.destroy() });
   }
-  shieldEffect(f, premium = false) {
+
+  shieldEffect(fighter, premium = false) {
     const color = premium ? 0xffd24d : 0x2cefff;
-    const ring = this.add.circle(f.container.x, f.container.y, 28, color, .08).setStrokeStyle(5, color, .95).setDepth(950);
-    this.tweens.add({ targets: ring, scale: 3, alpha: 0, duration: 720, ease: 'Sine.easeOut', onComplete: () => ring.destroy() });
-    this.pooledBurst(f.container.x, f.container.y, color, 18, 90); sfx('shield');
+    this.vfx.ring(fighter.container.x, fighter.container.y, color, 28, 3, 720, 5);
+    this.vfx.burst(fighter.container.x, fighter.container.y, color, 18, 90);
+    sfx('shield');
   }
-  triggerGift(event) {
-    const f = this.fighters.get(event.targetPlayerId); if (!f) return;
-    if (event.effect === 'entry-boost') { this.pooledBurst(f.container.x, f.container.y, 0x2cefff, 18, 105); this.floatingText(f.container.x, f.container.y - 45, 'BOOST DE ENTRADA 1.2X', '#2cefff', 18); }
-    else if (event.effect === 'tactical-shield') { this.shieldEffect(f, false); if (event.result?.heal) this.floatingText(f.container.x, f.container.y - 45, `+${Math.ceil(event.result.heal)} HP`, '#75ff7b', 18); }
-    else if (event.effect === 'speed') { this.pooledBurst(f.container.x, f.container.y, 0x2cefff, 18, 105); this.floatingText(f.container.x, f.container.y - 45, 'IMPULSO NEON', '#2cefff', 18); }
-    else if (event.effect === 'extra-projectile' && event.result?.targetId) this.renderCombatShot({ attackerId: event.targetPlayerId, targetId: event.result.targetId, gift: true });
-    else if (event.effect === 'meteor') this.cameras.main.flash(120, 255, 174, 44, false, undefined, .08);
-    else if (event.effect === 'star-power') { this.cameras.main.flash(180, 255, 210, 77, false, undefined, .1); this.pooledBurst(f.container.x, f.container.y, 0xffd24d, 30, 170); this.floatingText(f.container.x, f.container.y - 52, `STAR POWER • +${event.result?.hypeGain || 100} HYPE`, '#ffd24d', 21); }
-    else if (event.effect === 'colossus') { this.cameras.main.flash(250, 255, 210, 77, false, undefined, .12); this.pooledBurst(640, 360, 0xffd24d, 30, 220); }
+
+  triggerGift(event = {}) {
+    this.vfx.giftCinematic(event);
+    const fighter = this.fighters.get(event.targetPlayerId);
+    const premium = event.tier === 'premium';
+    if (premium) this.juice.impact({ duration: 70, shake: 0.012, flash: true, color: { r: 255, g: 210, b: 77 } });
+    else if (event.tier === 'event') this.juice.shake(240, 0.008);
+    if (!fighter) return;
+    if (event.effect === 'entry-boost') {
+      this.vfx.burst(fighter.container.x, fighter.container.y, 0x2cefff, 20, 110);
+      this.floatingText(fighter.container.x, fighter.container.y - 45, 'BOOST DE ENTRADA 1.2X', '#2cefff', 18);
+    } else if (event.effect === 'tactical-shield') {
+      this.shieldEffect(fighter, false);
+    } else if (event.effect === 'speed') {
+      this.vfx.burst(fighter.container.x, fighter.container.y, 0x2cefff, 20, 115);
+      this.floatingText(fighter.container.x, fighter.container.y - 45, 'IMPULSO NEON', '#2cefff', 18);
+      sfx('boost');
+    } else if (event.effect === 'extra-projectile' && event.result?.targetId) {
+      this.renderCombatShot({ attackerId: event.targetPlayerId, targetId: event.result.targetId, gift: true, damage: event.result.damageApplied });
+    } else if (event.effect === 'meteor') {
+      this.juice.flash({ r: 255, g: 174, b: 44 }, 150, 0.09);
+      sfx('meteor');
+    } else if (event.effect === 'star-power') {
+      this.vfx.burst(fighter.container.x, fighter.container.y, 0xffd24d, 34, 180);
+      this.floatingText(fighter.container.x, fighter.container.y - 52, `STAR POWER • +${event.result?.hypeGain || 100} HYPE`, '#ffd24d', 21);
+      sfx('legendary');
+    } else if (event.effect === 'colossus') {
+      this.vfx.burst(640, 360, 0xffd24d, 40, 260);
+      sfx('boss');
+    }
   }
-  renderCombatShot(event) {
-    const attacker = this.fighters.get(event.attackerId), target = this.fighters.get(event.targetId); if (!attacker || !target) return;
-    const projectile = this.acquire(this.projectilePool); if (!projectile) return;
+
+  renderCombatShot(event = {}) {
+    const attacker = this.fighters.get(event.attackerId);
+    const target = this.fighters.get(event.targetId);
+    if (!attacker || !target) return;
+    const projectile = this.acquireProjectile();
+    if (!projectile) return;
     const color = event.gift ? 0x75ff4d : 0x2cefff;
     projectile.setPosition(attacker.container.x, attacker.container.y - 8).setFillStyle(color, 1).setStrokeStyle(2, 0xffffff).setVisible(true).setActive(true);
-    this.tweens.add({ targets: projectile, x: target.container.x, y: target.container.y, duration: 260, ease: 'Quad.easeIn', onComplete: () => { this.release(projectile); this.pooledBurst(target.container.x, target.container.y, color, event.gift ? 14 : 8, event.gift ? 70 : 45); if (event.eliminated) this.eliminationEffect(target, event.attackerId); sfx('hit'); } });
+    this.tweens.add({
+      targets: projectile,
+      x: target.container.x,
+      y: target.container.y,
+      duration: event.gift ? 210 : 260,
+      ease: 'Quad.easeIn',
+      onComplete: () => {
+        this.releaseProjectile(projectile);
+        this.vfx.burst(target.container.x, target.container.y, color, event.gift ? 16 : 9, event.gift ? 75 : 48);
+        this.juice.hitStop(event.eliminated ? 72 : 38, event.eliminated ? 0.012 : 0.0045);
+        if (event.eliminated) this.eliminationEffect(target, event.attackerId);
+        sfx(event.eliminated ? 'elimination' : 'hit');
+      },
+    });
   }
+
   syncBoss(boss) {
-    if (!boss?.active) { this.destroyBossView(); return; }
-    if (!this.bossView) {
-      const pulse = this.add.circle(0, 0, 78, 0x7c28ff, .16).setStrokeStyle(5, 0xc56cff, .8);
-      const body = this.add.circle(0, 0, 58, 0x2b0b45, 1).setStrokeStyle(5, 0x9e44ff, 1);
-      const core = this.add.text(0, -3, 'C', { fontFamily: 'Arial', fontSize: '62px', fontStyle: 'bold', color: '#e6c8ff' }).setOrigin(.5);
-      const title = this.add.text(0, -96, 'COLOSSUS NEON', { fontFamily: 'Arial', fontSize: '18px', fontStyle: 'bold', color: '#f2ddff', stroke: '#100019', strokeThickness: 5 }).setOrigin(.5);
-      const hpBg = this.add.rectangle(-90, 83, 180, 12, 0x160820).setOrigin(0, .5).setStrokeStyle(1, 0xffffff, .2);
-      const hp = this.add.rectangle(-90, 83, 180, 8, 0xb34dff).setOrigin(0, .5);
-      const container = this.add.container(boss.x, boss.y, [pulse, body, core, title, hpBg, hp]).setDepth(980);
-      const tween = this.tweens.add({ targets: pulse, scale: 1.18, alpha: .4, duration: 650, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
-      this.bossView = { container, hp, pulse, tween, attackId: null, warning: null };
+    if (!boss?.active) {
+      this.destroyBossView();
+      this.lastBossPhase = 0;
+      return;
     }
-    this.bossView.container.setPosition(boss.x, boss.y); this.bossView.hp.width = 180 * boss.hp / Math.max(1, boss.maxHp);
+    const phase = phaseForBoss(boss);
+    if (!this.bossView) {
+      const pulse = this.add.circle(0, 0, 80, phase.color, 0.13).setStrokeStyle(5, phase.color, 0.82).setBlendMode(Phaser.BlendModes.ADD);
+      const body = this.add.circle(0, 0, 59, 0x250837, 1).setStrokeStyle(6, phase.color, 1);
+      const core = this.add.circle(0, 0, 21, phase.color, 0.85).setStrokeStyle(3, 0xffffff, 0.75).setBlendMode(Phaser.BlendModes.ADD);
+      const rune = this.add.text(0, -2, 'C', { fontFamily: 'Arial Black, Arial', fontSize: '46px', fontStyle: 'bold', color: '#ffffff' }).setOrigin(0.5);
+      const title = this.add.text(0, -103, 'COLOSSUS NEON', { fontFamily: 'Arial', fontSize: '18px', fontStyle: 'bold', color: '#f2ddff', stroke: '#100019', strokeThickness: 5 }).setOrigin(0.5);
+      const phaseText = this.add.text(0, -79, `FASE ${phase.id} • ${phase.name}`, { fontFamily: 'Arial', fontSize: '12px', fontStyle: 'bold', color: '#ffd7ff', stroke: '#100019', strokeThickness: 4 }).setOrigin(0.5);
+      const hpBg = this.add.rectangle(-90, 86, 180, 12, 0x160820).setOrigin(0, 0.5).setStrokeStyle(1, 0xffffff, 0.2);
+      const hp = this.add.rectangle(-90, 86, 180, 8, phase.color).setOrigin(0, 0.5);
+      const container = this.add.container(boss.x, boss.y, [pulse, body, core, rune, title, phaseText, hpBg, hp]).setDepth(980).setScale(0.1).setAlpha(0);
+      const tween = this.tweens.add({ targets: pulse, scale: 1.22, alpha: 0.38, duration: 650, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+      this.bossView = { container, hp, pulse, body, core, phaseText, tween, attackId: null, warning: null, hpValue: boss.hp };
+      this.vfx.attachBloom(core, 1.45);
+      this.tweens.add({ targets: container, scale: 1, alpha: 1, duration: 650, ease: 'Back.easeOut' });
+      this.vfx.burst(boss.x, boss.y, phase.color, 38, 240, 800);
+      this.juice.shake(450, 0.01);
+      sfx('boss');
+    }
+
+    const previousHp = Number(this.bossView.hpValue || boss.hp);
+    if (boss.hp < previousHp) this.vfx.damageNumber(boss.x, boss.y - 72, previousHp - boss.hp, { critical: phase.id >= 2 });
+    this.bossView.hpValue = boss.hp;
+    this.bossView.container.setPosition(boss.x, boss.y);
+    this.bossView.hp.width = 180 * boss.hp / Math.max(1, boss.maxHp);
+    this.bossView.hp.setFillStyle(phase.color, 1);
+    this.bossView.pulse.setFillStyle(phase.color, 0.13).setStrokeStyle(5, phase.color, 0.82);
+    this.bossView.body.setStrokeStyle(phase.id === 3 ? 8 : 6, phase.color, 1);
+    this.bossView.core.setFillStyle(phase.color, 0.9);
+    this.bossView.phaseText.setText(`FASE ${phase.id} • ${phase.name}`);
+    this.bossView.container.setScale(phase.id === 3 ? 1.12 : phase.id === 2 ? 1.06 : 1);
+
+    if (this.lastBossPhase && phase.id !== this.lastBossPhase) this.bossPhaseChanged(phase);
+    this.lastBossPhase = phase.id;
+
     const attack = boss.attack;
     if (attack && this.bossView.attackId !== attack.id) {
-      if (this.bossView.warning) { this.tweens.killTweensOf(this.bossView.warning); this.bossView.warning.destroy(); }
-      const warning = this.add.circle(attack.x, attack.y, attack.radius, 0xff3f86, .08).setStrokeStyle(5, 0xff3f86, .95).setDepth(900);
-      this.tweens.add({ targets: warning, alpha: .3, scale: .9, duration: 450, yoyo: true, repeat: 4 });
-      this.bossView.warning = warning; this.bossView.attackId = attack.id;
-    } else if (!attack && this.bossView.warning) { this.tweens.killTweensOf(this.bossView.warning); this.bossView.warning.destroy(); this.bossView.warning = null; this.bossView.attackId = null; }
+      if (this.bossView.warning) {
+        this.tweens.killTweensOf(this.bossView.warning);
+        this.bossView.warning.destroy();
+      }
+      const warningColor = phase.id === 3 ? 0xff315f : 0xff3f86;
+      const warning = this.add.circle(attack.x, attack.y, attack.radius, warningColor, 0.07).setStrokeStyle(5, warningColor, 0.95).setDepth(900).setBlendMode(Phaser.BlendModes.ADD);
+      this.tweens.add({ targets: warning, alpha: 0.32, scale: 0.9, duration: phase.id === 3 ? 300 : 450, yoyo: true, repeat: 5 });
+      this.bossView.warning = warning;
+      this.bossView.attackId = attack.id;
+      sfx('warning');
+    } else if (!attack && this.bossView.warning) {
+      this.tweens.killTweensOf(this.bossView.warning);
+      this.bossView.warning.destroy();
+      this.bossView.warning = null;
+      this.bossView.attackId = null;
+    }
   }
+
+  bossPhaseChanged(phaseOrPayload = {}) {
+    const phase = phaseOrPayload.id ? phaseOrPayload : phaseForBoss({ hp: phaseOrPayload.hp, maxHp: phaseOrPayload.maxHp });
+    if (phase.id <= 1) return;
+    const title = this.add.text(640, 210, `COLOSSUS • FASE ${phase.id}\n${phase.name}`, {
+      align: 'center', fontFamily: 'Arial Black, Arial', fontSize: phase.id === 3 ? '44px' : '38px', fontStyle: 'bold italic', color: phase.id === 3 ? '#ff5b7f' : '#ffb04a', stroke: '#130018', strokeThickness: 10,
+    }).setOrigin(0.5).setDepth(2600).setScale(0.4).setAlpha(0);
+    this.tweens.chain({ targets: title, tweens: [{ scale: 1.05, alpha: 1, duration: 330, ease: 'Back.easeOut' }, { duration: 650 }, { y: 175, alpha: 0, duration: 390 }], onComplete: () => title.destroy() });
+    this.vfx.burst(640, 360, phase.color, phase.id === 3 ? 40 : 30, phase.id === 3 ? 320 : 240);
+    this.juice.bossPhase(phase.id);
+    sfx(phase.id === 3 ? 'boss-critical' : 'boss-phase');
+  }
+
+  renderBossAttack(event = {}) {
+    if (event.reason === 'attack-warning') {
+      const target = this.fighters.get(event.targetPlayerId);
+      if (target) this.vfx.ring(target.container.x, target.container.y, 0xff315f, 38, 2.3, 760, 4);
+      return;
+    }
+    if (event.reason === 'attack-resolved') {
+      for (const id of event.impactedPlayerIds || []) {
+        const fighter = this.fighters.get(id);
+        if (fighter) {
+          this.vfx.burst(fighter.container.x, fighter.container.y, 0xff315f, 18, 105);
+        }
+      }
+      this.juice.impact({ duration: 62, shake: 0.011, flash: true });
+      sfx('explosion');
+    }
+  }
+
   destroyBossView() {
     if (!this.bossView) return;
-    if (this.bossView.warning) { this.tweens.killTweensOf(this.bossView.warning); this.bossView.warning.destroy(); }
-    this.bossView.tween?.stop(); this.tweens.killTweensOf(this.bossView.container); this.bossView.container.destroy(); this.bossView = null;
+    if (this.bossView.warning) {
+      this.tweens.killTweensOf(this.bossView.warning);
+      this.bossView.warning.destroy();
+    }
+    this.bossView.tween?.stop();
+    this.tweens.killTweensOf(this.bossView.container);
+    this.bossView.container.destroy();
+    this.bossView = null;
   }
+
   syncHazards(hazards) {
     const active = new Set();
     for (const hazard of hazards.slice(-12)) {
-      active.add(hazard.id); let view = this.hazardViews.get(hazard.id);
+      active.add(hazard.id);
+      let view = this.hazardViews.get(hazard.id);
       if (!view) {
-        const circle = this.add.circle(hazard.x, hazard.y, hazard.radius, 0xff9f2f, .06).setStrokeStyle(4, 0xffc24c, .95).setDepth(880);
-        const tween = this.tweens.add({ targets: circle, scale: .9, alpha: .28, duration: 420, yoyo: true, repeat: -1 });
-        view = { circle, tween, resolved: false }; this.hazardViews.set(hazard.id, view);
+        const circle = this.add.circle(hazard.x, hazard.y, hazard.radius, 0xff9f2f, 0.055).setStrokeStyle(4, 0xffc24c, 0.95).setDepth(880).setBlendMode(Phaser.BlendModes.ADD);
+        const countdown = this.add.text(hazard.x, hazard.y, 'IMPACTO', { fontFamily: 'Arial Black, Arial', fontSize: '13px', color: '#ffd28a', stroke: '#180900', strokeThickness: 5 }).setOrigin(0.5).setDepth(890);
+        const tween = this.tweens.add({ targets: circle, scale: 0.9, alpha: 0.3, duration: 420, yoyo: true, repeat: -1 });
+        view = { circle, countdown, tween, resolved: false };
+        this.hazardViews.set(hazard.id, view);
+        sfx('warning');
       }
-      if (hazard.resolved && !view.resolved) { view.resolved = true; view.tween.stop(); view.circle.setVisible(false); this.pooledBurst(hazard.x, hazard.y, 0xff9f2f, 30, 150); this.cameras.main.shake(220, .008); sfx('explosion'); }
+      if (hazard.resolved && !view.resolved) {
+        view.resolved = true;
+        view.tween.stop();
+        view.circle.setVisible(false);
+        view.countdown.setVisible(false);
+        this.vfx.burst(hazard.x, hazard.y, 0xff9f2f, 34, 165);
+        this.juice.impact({ duration: 58, shake: 0.009, flash: true, color: { r: 255, g: 159, b: 47 } });
+        sfx('explosion');
+      }
     }
-    for (const [id, view] of this.hazardViews) if (!active.has(id)) { view.tween?.stop(); view.circle.destroy(); this.hazardViews.delete(id); }
+    for (const [id, view] of this.hazardViews) {
+      if (active.has(id)) continue;
+      view.tween?.stop();
+      view.circle.destroy();
+      view.countdown?.destroy();
+      this.hazardViews.delete(id);
+    }
   }
-  eliminationEffect(f, attackerId = '') {
-    if (f.eliminating) return; f.eliminating = true; f.wasAlive = false; this.pooledBurst(f.container.x, f.container.y, 0xff315f, 24, 110); this.floatingText(f.container.x, f.container.y - 45, 'ELIMINADO', '#ff426b', 25); sfx('elimination');
-    this.tweens.add({ targets: f.container, scale: 1.35, angle: 12, alpha: .16, duration: 520, ease: 'Back.easeIn', onComplete: () => f.container.setScale(1).setAngle(0).setAlpha(.16) });
-    if (attackerId) this.cameras.main.flash(90, 255, 45, 90, false, undefined, .08);
+
+  renderMeteorImpact(payload = {}) {
+    this.vfx.burst(payload.x || 640, payload.y || 360, 0xff9f2f, 38, 180);
+    this.juice.impact({ duration: 62, shake: 0.01, flash: true, color: { r: 255, g: 159, b: 47 } });
+    sfx('meteor');
   }
+
+  eliminationEffect(fighter, attackerId = '') {
+    if (fighter.eliminating) return;
+    fighter.eliminating = true;
+    fighter.wasAlive = false;
+    this.vfx.burst(fighter.container.x, fighter.container.y, 0xff315f, 28, 125);
+    this.vfx.ring(fighter.container.x, fighter.container.y, 0xff315f, 24, 3.2, 520, 5);
+    this.floatingText(fighter.container.x, fighter.container.y - 45, 'ELIMINADO', '#ff426b', 25);
+    this.juice.impact({ duration: 68, shake: 0.009, flash: Boolean(attackerId) });
+    sfx('elimination');
+    this.tweens.add({ targets: fighter.container, scale: 1.35, angle: 12, alpha: 0.16, duration: 520, ease: 'Back.easeIn', onComplete: () => fighter.container.setScale(1).setAngle(0).setAlpha(0.16) });
+  }
+
   battleStart() {
-    const title = this.add.text(640, 360, 'BATALHA INICIADA', { fontFamily: 'Arial', fontSize: '58px', fontStyle: 'bold italic', color: '#ffffff', stroke: '#a52cff', strokeThickness: 8 }).setOrigin(.5).setDepth(2500).setScale(.3).setAlpha(0);
-    this.tweens.chain({ targets: title, tweens: [{ scale: 1.1, alpha: 1, duration: 420, ease: 'Back.easeOut' }, { scale: 1, duration: 700 }, { scale: 1.6, alpha: 0, duration: 360 }], onComplete: () => title.destroy() }); this.cameras.main.flash(350, 44, 239, 255); sfx('start');
+    const title = this.add.text(640, 360, 'BATALHA INICIADA', { fontFamily: 'Arial Black, Arial', fontSize: '58px', fontStyle: 'bold italic', color: '#ffffff', stroke: '#a52cff', strokeThickness: 8 }).setOrigin(0.5).setDepth(2500).setScale(0.3).setAlpha(0);
+    this.tweens.chain({ targets: title, tweens: [{ scale: 1.1, alpha: 1, duration: 420, ease: 'Back.easeOut' }, { scale: 1, duration: 700 }, { scale: 1.6, alpha: 0, duration: 360 }], onComplete: () => title.destroy() });
+    this.vfx.burst(640, 360, 0x2cefff, 36, 300);
+    this.juice.flash({ r: 44, g: 239, b: 255 }, 350, 0.12);
+    sfx('start');
   }
+
   suddenDeath() {
-    const title = this.add.text(640, 250, 'MORTE SÚBITA', { fontFamily: 'Arial', fontSize: '62px', fontStyle: 'bold italic', color: '#ff426b', stroke: '#24000c', strokeThickness: 10 }).setOrigin(.5).setDepth(2500).setScale(.45).setAlpha(0);
+    const title = this.add.text(640, 250, 'MORTE SÚBITA', { fontFamily: 'Arial Black, Arial', fontSize: '62px', fontStyle: 'bold italic', color: '#ff426b', stroke: '#24000c', strokeThickness: 10 }).setOrigin(0.5).setDepth(2500).setScale(0.45).setAlpha(0);
     this.tweens.chain({ targets: title, tweens: [{ scale: 1.08, alpha: 1, duration: 360, ease: 'Back.easeOut' }, { scale: 1, duration: 1000 }, { y: 205, alpha: 0, duration: 420 }], onComplete: () => title.destroy() });
-    this.cameras.main.flash(280, 255, 35, 75, false, undefined, .14); this.cameras.main.shake(380, .009); sfx('storm');
+    this.juice.impact({ duration: 75, shake: 0.012, flash: true });
+    sfx('storm');
   }
+
   battleEnd(winner) {
-    const f = winner && this.fighters.get(winner.id), x = f?.container.x || 640, y = f?.container.y || 360; this.pooledBurst(x, y, 0x75ff4d, 30, 220); sfx('win');
+    const fighter = winner && this.fighters.get(winner.id);
+    const x = fighter?.container.x || 640;
+    const y = fighter?.container.y || 360;
+    this.vfx.burst(x, y, 0x75ff4d, 40, 260);
+    this.vfx.ring(x, y, 0xffd24d, 55, 4, 950, 8);
+    this.juice.flash({ r: 255, g: 210, b: 77 }, 320, 0.12);
+    sfx('win');
   }
-  stormSurge(value) { this.cameras.main.flash(180, 142, 35, 255, false, undefined, .11); this.floatingText(640, 165, `TEMPESTADE ${value}%`, '#d576ff', 26); sfx('storm'); }
-  likeBurst() { this.pooledBurst(640, 360, 0xff4d9d, 30, 210); this.floatingText(640, 330, '500 CURTIDAS • TEMPESTADE RECUOU', '#ff75b8', 22); sfx('like'); }
+
+  stormSurge(value) {
+    this.juice.flash({ r: 142, g: 35, b: 255 }, 180, 0.11);
+    this.floatingText(640, 165, `TEMPESTADE ${value}%`, '#d576ff', 26);
+    sfx('storm');
+  }
+
+  likeBurst() {
+    this.vfx.burst(640, 360, 0xff4d9d, 34, 220);
+    this.floatingText(640, 330, '500 CURTIDAS • TEMPESTADE RECUOU', '#ff75b8', 22);
+    sfx('like');
+  }
+
   update(time, delta) {
-    if (!this.state) return;
-    const alive = [...this.fighters.values()].filter((f) => f.data.alive);
-    alive.forEach((f) => {
-      const dx = (f.data.x ?? f.container.x) - f.container.x, dy = (f.data.y ?? f.container.y) - f.container.y, dist = Math.hypot(dx, dy);
-      if (dist > .5) {
+    if (!this.state || this.juice?.isHitStopped()) return;
+    const alive = [...this.fighters.values()].filter((fighter) => fighter.data.alive);
+    for (const fighter of alive) {
+      const dx = (fighter.data.x ?? fighter.container.x) - fighter.container.x;
+      const dy = (fighter.data.y ?? fighter.container.y) - fighter.container.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > 0.5) {
         const blend = Math.min(1, delta / 150);
-        f.container.x += dx * blend; f.container.y += dy * blend; f.container.setDepth(f.container.y);
-        f.sprite.y = Math.sin(time / 90) * 3; f.glow.alpha = .12 + Math.sin(time / 180) * .04;
-        f.sprite.setFrame((f.data.skin % 4) * 4 + (Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 1 : 2) : (dy < 0 ? 3 : 0)));
+        fighter.container.x += dx * blend;
+        fighter.container.y += dy * blend;
+        fighter.container.setDepth(fighter.container.y);
       }
-      if ((f.data.speedMultiplier || 1) > 1 && time > f.trailAt) {
-        f.trailAt = time + 90; const dot = this.acquire(this.dotPool);
-        if (dot) { dot.setPosition(f.container.x, f.container.y + 18).setRadius(5).setFillStyle(0x2cefff, .55).setVisible(true).setActive(true); this.tweens.add({ targets: dot, alpha: 0, scale: 0, duration: 320, onComplete: () => this.release(dot) }); }
+      fighter.glow.alpha = 0.1 + (Math.sin(time / 180) + 1) * 0.035;
+      fighter.ball.setScale(1 + Math.sin(time / 160 + fighter.container.x) * 0.025);
+      if ((fighter.data.speedMultiplier || 1) > 1 && time > fighter.trailAt) {
+        fighter.trailAt = time + 85;
+        this.vfx.trail(fighter.container.x, fighter.container.y + 18, 0x2cefff, 0.48);
       }
-      if (f.data.starPowerUntil && time > f.starTrailAt) {
-        f.starTrailAt = time + 120; f.starAura.alpha = .08 + (Math.sin(time / 130) + 1) * .07;
-        const dot = this.acquire(this.dotPool);
-        if (dot) { dot.setPosition(f.container.x + Phaser.Math.Between(-24, 24), f.container.y + Phaser.Math.Between(-28, 22)).setRadius(Phaser.Math.Between(3, 6)).setFillStyle(0xffd24d, .8).setVisible(true).setActive(true); this.tweens.add({ targets: dot, y: dot.y - 35, alpha: 0, scale: 0, duration: 520, onComplete: () => this.release(dot) }); }
+      if (fighter.data.starPowerUntil && time > fighter.starTrailAt) {
+        fighter.starTrailAt = time + 110;
+        this.vfx.trail(fighter.container.x + Phaser.Math.Between(-22, 22), fighter.container.y + Phaser.Math.Between(-20, 20), 0xffd24d, 0.42);
       }
-    });
+    }
   }
+
   cleanupScene() {
-    this.input.off('pointerdown'); this.destroyBossView();
-    for (const [id, f] of this.fighters) this.destroyFighter(id, f);
-    for (const view of this.hazardViews.values()) { view.tween?.stop(); view.circle.destroy(); }
+    this.input.off('pointerdown');
+    this.destroyBossView();
+    for (const [id, fighter] of this.fighters) this.destroyFighter(id, fighter);
+    for (const view of this.hazardViews.values()) {
+      view.tween?.stop();
+      view.circle.destroy();
+      view.countdown?.destroy();
+    }
     this.hazardViews.clear();
-    [...(this.dotPool || []), ...(this.projectilePool || [])].forEach((item) => item.destroy());
-    this.dotPool = []; this.projectilePool = [];
+    for (const item of this.projectilePool || []) item.destroy();
+    this.projectilePool = [];
+    this.vfx?.destroy();
+    this.juice?.destroy();
   }
 }

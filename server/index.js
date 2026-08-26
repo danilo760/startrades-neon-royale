@@ -7,7 +7,7 @@ import { authorizeAdminRequest, sanitizedAdminLog } from './admin.js';
 import { GiftEventLedger, resolveGiftDefinition, sanitizeDisplayName, sanitizeNarrationName } from './gifts.js';
 import { addBots, applyComment, applyGiftEffect, finish, likes, pause, reset, setStorm, spawnBoss, start, state, tickGame, tickStorm, updateSettings } from './engine.js';
 import { ENGINE_EVENT_CHANNEL, eventBus } from './event-bus.js';
-import { initializeLeaderboard } from './leaderboard.js';
+import { getLeaderboard, initializeLeaderboard } from './leaderboard.js';
 import { createNarrator } from './narrator.js';
 
 const cfg = {
@@ -28,12 +28,13 @@ app.use(express.json({ limit: '200kb' }));
 app.use(express.static('dist'));
 const server = app.listen(cfg.port, () => console.log(`StarTrades LIVE http://127.0.0.1:${cfg.port} (${cfg.mock ? 'SIMULAÇÃO' : '@' + cfg.username})`));
 const wss = new WebSocketServer({ server, path: '/events' });
+const publicState = () => ({ ...state, arenaKings: getLeaderboard().slice(0, 3) });
 const emit = (type, payload = {}) => {
-  const data = JSON.stringify({ type, payload, state });
+  const data = JSON.stringify({ type, payload, state: publicState() });
   wss.clients.forEach((client) => client.readyState === 1 && client.send(data));
 };
-wss.on('connection', (socket) => socket.send(JSON.stringify({ type: 'state', state })));
-void initializeLeaderboard();
+wss.on('connection', (socket) => socket.send(JSON.stringify({ type: 'state', state: publicState() })));
+void initializeLeaderboard().then(() => emit('leaderboard:ready', { count: getLeaderboard().length }));
 
 const giftLedger = new GiftEventLedger();
 eventBus.on(ENGINE_EVENT_CHANNEL, (event) => emit(event.type, event.payload));
@@ -84,8 +85,8 @@ if (!cfg.mock) {
   live.connect().catch((error) => console.error('[tiktok-connect]', error));
 }
 
-const ok = (res) => res.json({ ok: true, state });
-const conflict = (res, error) => res.status(409).json({ ok: false, error, state });
+const ok = (res) => res.json({ ok: true, state: publicState() });
+const conflict = (res, error) => res.status(409).json({ ok: false, error, state: publicState() });
 const admin = (action) => (req, res, next) => {
   const result = authorizeAdminRequest({ headers: req.headers, ip: req.ip, token: cfg.adminToken, action });
   if (!result.ok) return res.status(result.status).json({ ok: false, error: result.reason });
@@ -128,18 +129,19 @@ app.post('/api/admin/gift', admin('gift'), (req, res) => {
   if (!target) return res.status(400).json({ ok: false, error: 'invalid-target-player' });
   adminLog({ action: 'simulate-gift', giftId: giftDef.giftId, targetPlayerId: target.id, source: 'control-panel' });
   const result = applyGiftEffect({ eventId: `admin:${randomUUID()}`, senderUserId: 'admin-simulator', senderUsername: 'SIMULAÇÃO', targetUserId: target.id, giftId: giftDef.giftId, giftName: giftDef.aliases[0], repeatCount: 1, source: 'control-panel' });
-  res.json({ ok: result.status === 'applied', result, state });
+  res.json({ ok: result.status === 'applied', result, state: publicState() });
 });
 app.post('/api/admin/boss', admin('boss'), (req, res) => {
   if (!cfg.mock) return res.status(403).json({ ok: false, error: 'test-mode-disabled' });
   adminLog({ action: 'spawn-boss', source: 'control-panel' });
   const result = spawnBoss({ source: 'control-panel' });
-  res.status(result.applied || result.reason === 'extended' ? 200 : 409).json({ ok: Boolean(result.applied), result, state });
+  res.status(result.applied || result.reason === 'extended' ? 200 : 409).json({ ok: Boolean(result.applied), result, state: publicState() });
 });
 app.post('/api/mock/gift', (_req, res) => res.status(410).json({ ok: false, error: 'use-admin-gift-simulator' }));
 app.post('/api/mock/comment', admin('mock-comment'), (req, res) => { if (!cfg.mock) return res.status(403).json({ ok: false, error: 'test-mode-disabled' }); chat({ ...req.body, user: { userId: req.body.user?.userId || 'mock-user', uniqueId: req.body.user?.uniqueId || req.body.username || 'mock' } }); ok(res); });
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'startrades-neon-royale', uptimeSeconds: Math.floor(process.uptime()) }));
+app.get('/api/leaderboard', (_req, res) => res.json({ ok: true, kings: getLeaderboard().slice(0, 3) }));
 app.get('/api/config', (_req, res) => res.json({ username: cfg.username, mock: cfg.mock, model: cfg.model, adminConfigured: Boolean(cfg.adminToken), countdownMs: cfg.countdownMs, intermissionMs: cfg.intermissionMs, giftCatalog: state.giftCatalog }));
 
 function autoFinish() {
