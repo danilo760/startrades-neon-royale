@@ -10,8 +10,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-      - run: npm install
+          node-version: 22
+      - run: npm ci
       - run: RUN_INTEGRATION_TESTS=true npm run check
       - name: Smoke test production server
         env:
@@ -20,12 +20,14 @@ jobs:
           MOCK_MODE=true npm start > /tmp/startrades-server.log 2>&1 &
           SERVER_PID=$!
           for attempt in {1..20}; do
-            if curl --fail --silent http://127.0.0.1:4173/api/config; then
+            if curl --fail --silent http://127.0.0.1:4173/api/health; then
               kill $SERVER_PID
+              wait $SERVER_PID || true
               exit 0
             fi
             sleep 1
           done
           cat /tmp/startrades-server.log
           kill $SERVER_PID || true
+          wait $SERVER_PID || true
           exit 1

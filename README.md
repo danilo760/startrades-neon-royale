@@ -1,55 +1,84 @@
 # StarTrades Neon Royale
 
-Battle Royale 2D visto de cima para a LIVE `@startrades01`. Personagens caminham, miram, disparam e recebem poderes acionados por presentes e comentários.
+Battle Royale 2D visto de cima para TikTok LIVE, com backend Node/Express/WS autoritativo e frontend React + Phaser 3.
+
+## Arquitetura atual
+
+- GitHub: desenvolvimento na branch `codex/neon-royale`.
+- Render: ambiente oficial de execução e preview do projeto.
+- Supabase: serviço externo de persistência do ranking, configurado por variáveis de ambiente no Render.
+- TikTok/TikTool: conector da LIVE quando `MOCK_MODE=false`.
+- Ollama: narrador opcional; se `OLLAMA_URL` não estiver acessível no Render, o servidor usa fallback local de texto.
 
 ## Recursos
 
-- Quatro personagens originais com quatro direções.
-- Movimento e combate automáticos, vida, escudo, energia, eliminações e ranking.
-- Poderes: rajada, escudo, suprimentos, granada, ataque aéreo, drone e meteoro.
-- Tempestade progressiva, partículas, tremor de câmera, música e efeitos sonoros originais.
-- Comentários: `!entrar`, `!esquerda`, `!direita`, `!cima`, `!baixo` e `!poder`.
-- Painel privado, modo simulação, integração TikTool e narrador Ollama.
+- Modo individual e Azul vs Vermelho.
+- Movimento, combate, vida, escudo, eliminações e ranking autoritativos no servidor.
+- Bounty/coroa do líder com pontuação tripla na eliminação do alvo.
+- Quatro mapas procedurais.
+- Avatares circulares.
+- Gifts centralizados por `giftId`, com allowlist, cooldown, limites e idempotência.
+- Rosa: bônus de entrada leve de `1.2x` por até 5 segundos; fora da arena vira bônus pendente.
+- Escudo tático: cura limitada + escudo curto, sem invulnerabilidade longa.
+- Meteoro: alvo neutro escolhido pelo servidor, área telegrafada e dano não letal.
+- Star Power: Hype + aura dourada por até 60 segundos, sem multiplicar score competitivo.
+- Colossus Neon cooperativo e autoritativo.
+- Painel administrativo protegido por `ADMIN_TOKEN`.
+- Narrador com prioridade, TTL, fallback e limite programático de 16 palavras.
 
-## Instalação no Windows
+## Desenvolvimento local
 
 ```powershell
 npm install
 Copy-Item .env.example .env
-ollama pull llama3.2:3b
 npm run dev
 ```
 
-Desenvolvimento: overlay em `http://127.0.0.1:5173` e painel em `http://127.0.0.1:5173/control`.
+Frontend local: `http://127.0.0.1:5173`
 
-Para o LIVE Studio:
+Painel local: `http://127.0.0.1:5173/control`
+
+Servidor de produção local:
 
 ```powershell
 npm run build
 npm start
 ```
 
-Use `http://127.0.0.1:4173` como fonte de navegador e abra `http://127.0.0.1:4173/control` somente no seu navegador.
+## Render
 
-## LIVE real
+O `render.yaml` usa:
 
-Edite somente o `.env` local:
+- branch `codex/neon-royale`;
+- build `npm ci && npm run build`;
+- start `npm start`;
+- health check `/api/health`;
+- Node 22;
+- encerramento gracioso para deploy/restart.
+
+Variáveis sensíveis devem continuar configuradas no **Render Dashboard**, nunca commitadas no GitHub:
 
 ```env
-TIKTOK_USERNAME=startrades01
-TIKTOOL_API_KEY=SUA_CHAVE_LOCAL
-MOCK_MODE=false
+ADMIN_TOKEN=
+TIKTOOL_API_KEY=
+SUPABASE_URL=
+SUPABASE_SECRET_KEY=
+MOCK_MODE=
 ```
 
-Nunca envie `.env`, cookies, senha do TikTok ou a chave TikTool ao GitHub/Lovable.
+`MOCK_MODE=true` mantém o simulador administrativo. `MOCK_MODE=false` habilita o conector real e exige `TIKTOOL_API_KEY` válida.
 
-## Teste recomendado
+O `render.yaml` declara essas variáveis com `sync: false`, portanto os valores existentes no Render permanecem fora do repositório.
 
-1. Abra overlay e painel.
-2. Clique em **Ativar áudio** no overlay.
-3. Adicione os seis jogadores de teste.
-4. Inicie a rodada.
-5. Simule presentes de 1, 5, 10, 30, 100, 300 e 1.000 diamantes.
-6. Teste pausa, tempestade e encerramento.
+## Supabase
 
-TikTool é um serviço terceirizado, não oficial do TikTok. Faça uma LIVE privada antes de transmitir publicamente e mantenha supervisão.
+O servidor lê `SUPABASE_URL` e `SUPABASE_SECRET_KEY` exclusivamente do ambiente do Render. Nenhuma migration ou alteração de banco é aplicada automaticamente por este repositório nesta etapa.
+
+Se essas variáveis não estiverem disponíveis, o ranking possui fallback em memória; isso serve apenas para resiliência e teste.
+
+## Segurança operacional
+
+- Nunca envie `.env`, cookies, senha do TikTok ou tokens ao GitHub.
+- O cliente nunca define magnitude, duração ou dano de Gift.
+- O simulador funciona somente com autenticação administrativa e em `MOCK_MODE`.
+- Use uma LIVE de teste antes de ativar o conector real em produção.

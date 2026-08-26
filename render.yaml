@@ -3,15 +3,25 @@ services:
     name: startrades-neon-royale
     runtime: node
     plan: free
+    branch: codex/neon-royale
     buildCommand: npm ci && npm run build
     startCommand: npm start
-    healthCheckPath: /api/config
+    healthCheckPath: /api/health
+    maxShutdownDelaySeconds: 20
     envVars:
       - key: NODE_VERSION
         value: "22"
+      - key: NODE_ENV
+        value: production
       - key: MOCK_MODE
-        value: "true"
+        sync: false
       - key: TIKTOK_USERNAME
         value: startrades01
+      - key: TIKTOOL_API_KEY
+        sync: false
       - key: ADMIN_TOKEN
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
         sync: false
