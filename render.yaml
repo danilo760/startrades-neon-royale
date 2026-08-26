@@ -13,5 +13,3 @@ services:
         value: "true"
       - key: TIKTOK_USERNAME
         value: startrades01
-      - key: TIKTOOL_API_KEY
-        sync: false
