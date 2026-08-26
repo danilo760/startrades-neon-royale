@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { publishEngineEvent } from './event-bus.js';
 import { getLeaderboardTop, recordRound } from './leaderboard.js';
 import { publicGiftCatalog, resolveGiftDefinition, sanitizeDisplayName, sanitizeNarrationName, sanitizeStableId } from './gifts.js';
 
@@ -11,7 +12,6 @@ const GIFT_IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
 const PENDING_TTL_MS = 10 * 60 * 1000;
 const BASE_ATTACK_DAMAGE = 4;
 const ATTACK_COOLDOWN_MS = 850;
-const MAX_EVENT_LOG = 100;
 
 export const ARENA_BACKGROUNDS = ['default', 'cyberpunk', 'space', 'retro'];
 export const POWER_PRESETS = Object.freeze({ shot: { label: 'RAJADA ESTELAR', damage: BASE_ATTACK_DAMAGE, color: 0x2cefff, sound: 'shot' } });
@@ -44,17 +44,11 @@ const pendingGifts = new Map();
 const combatCooldowns = new Map();
 const bossAttackCooldowns = new Map();
 const bossDamage = new Map();
-const engineEvents = [];
 
 const feed = (text, tone = 'info') => {
   state.feed.unshift({ id: `${Date.now()}-${Math.random()}`, text: String(text).slice(0, 160), tone, at: Date.now() });
   state.feed = state.feed.slice(0, 14);
 };
-const queueEvent = (type, payload = {}) => {
-  engineEvents.push({ type, payload, at: nowMs() });
-  if (engineEvents.length > MAX_EVENT_LOG) engineEvents.splice(0, engineEvents.length - MAX_EVENT_LOG);
-};
-export function drainEngineEvents() { return engineEvents.splice(0, engineEvents.length); }
 
 const playerHealthRatio = (p) => (p.hp + p.shield) / Math.max(1, p.maxHp || 100);
 const teamStats = (team) => [...players.values()].filter((p) => p.team === team).reduce((total, p) => ({ score: total.score + p.score, survivors: total.survivors + Number(p.alive), eliminations: total.eliminations + p.eliminations }), { score: 0, survivors: 0, eliminations: 0 });
@@ -288,7 +282,7 @@ export function spawnBoss({ source = 'system', now = nowMs() } = {}) {
     const nextExpiry = Math.min(maxExpiry, state.boss.expiresAt + 10_000);
     const extended = Math.max(0, nextExpiry - state.boss.expiresAt);
     state.boss.expiresAt = nextExpiry;
-    queueEvent('boss:updated', { reason: extended ? 'extended' : 'visual-only', extendedMs: extended, source, boss: { ...state.boss } });
+    publishEngineEvent('boss:updated', { reason: extended ? 'extended' : 'visual-only', extendedMs: extended, source, boss: { ...state.boss } });
     return { applied: Boolean(extended), reason: extended ? 'extended' : 'already-active', boss: state.boss };
   }
   if (state.bossCooldownUntil > now) return { applied: false, reason: 'cooldown', cooldownUntil: state.bossCooldownUntil, boss: state.boss };
@@ -297,7 +291,7 @@ export function spawnBoss({ source = 'system', now = nowMs() } = {}) {
   state.bossCooldownUntil = now + 60_000;
   bossDamage.clear(); bossAttackCooldowns.clear(); bossLastTickAt = now;
   feed('COLOSSUS NEON entrou na arena', 'boss');
-  queueEvent('boss:spawned', { source, boss: { ...state.boss } });
+  publishEngineEvent('boss:spawned', { source, boss: { ...state.boss } });
   return { applied: true, boss: state.boss };
 }
 
@@ -315,10 +309,10 @@ function clearBoss(reason, { reward = false } = {}) {
       player.score += base + bonus;
     }
     feed('COLOSSUS NEON foi derrotado pela arena', 'boss');
-    queueEvent('boss:defeated', { boss: old, participants: active.length });
+    publishEngineEvent('boss:defeated', { boss: old, participants: active.length });
   } else if (reason === 'expired') {
     feed('COLOSSUS NEON escapou da arena', 'boss');
-    queueEvent('boss:escaped', { boss: old });
+    publishEngineEvent('boss:escaped', { boss: old });
   }
   state.boss = { ...emptyBoss(), cooldownUntil: state.bossCooldownUntil };
   bossDamage.clear(); bossAttackCooldowns.clear(); sync(); return old;
@@ -370,7 +364,7 @@ function applyResolvedGift({ gift, senderUserId, senderUsername, giftName, repea
   };
   if (effectResult.applied) {
     feed(`@${payload.senderUsername} enviou ${payload.giftName} — ${gift.effect} em @${targetPlayer.username}`, gift.tier === 'premium' ? 'boss' : 'gift');
-    queueEvent('gift:applied', payload);
+    publishEngineEvent('gift:applied', payload);
   }
   sync();
   return { status: effectResult.applied ? 'applied' : 'rejected', reason: effectResult.reason, ...payload };
@@ -386,31 +380,31 @@ export function applyGiftEffect(input = {}) {
   const gift = resolveGiftDefinition(input.giftId, input.giftName);
   if (!eventId || !senderUserId) {
     const rejected = { eventId, source, status: 'rejected', reason: 'invalid-event', senderUsername };
-    queueEvent('gift:rejected', rejected); return rejected;
+    publishEngineEvent('gift:rejected', rejected); return rejected;
   }
   if (!rememberGiftEvent(eventId, now)) {
     const duplicate = { eventId, source, status: 'rejected', reason: 'duplicate-event', senderUsername };
-    queueEvent('gift:rejected', duplicate); return duplicate;
+    publishEngineEvent('gift:rejected', duplicate); return duplicate;
   }
   if (!gift) {
     const unknown = { eventId, source, status: 'rejected', reason: 'unknown-gift', visualOnly: true, giftName: sanitizeDisplayName(input.giftName, 'Presente', 48), senderUsername };
-    queueEvent('gift:rejected', unknown); return unknown;
+    publishEngineEvent('gift:rejected', unknown); return unknown;
   }
   if (state.phase !== 'running') {
     const rejected = { eventId, source, status: 'rejected', reason: 'round-not-running', giftId: gift.giftId, giftName: sanitizeDisplayName(input.giftName, gift.aliases[0], 48), senderUsername };
-    queueEvent('gift:rejected', rejected); return rejected;
+    publishEngineEvent('gift:rejected', rejected); return rejected;
   }
   const acceptedActivations = registerGiftUsage(senderUserId, repeatCount);
   if (!acceptedActivations) {
     const rejected = { eventId, source, status: 'rejected', reason: 'round-limit', giftId: gift.giftId, senderUsername };
-    queueEvent('gift:rejected', rejected); return rejected;
+    publishEngineEvent('gift:rejected', rejected); return rejected;
   }
   const beneficiary = resolveBeneficiary(senderUserId, input.targetUserId);
   if (!beneficiary.player) {
     const pendingPayload = { gift, eventId, senderUserId, senderUsername, giftName: input.giftName || gift.aliases[0], repeatCount: acceptedActivations, source };
     storePendingGift(pendingPayload, now);
     const pending = { eventId, source, status: 'pending', reason: beneficiary.reason, giftId: gift.giftId, giftName: sanitizeDisplayName(input.giftName, gift.aliases[0], 48), senderUserId, senderUsername, expiresAt: now + PENDING_TTL_MS };
-    queueEvent('gift:pending', pending); return pending;
+    publishEngineEvent('gift:pending', pending); return pending;
   }
   let result = null;
   for (let i = 0; i < acceptedActivations; i++) {
@@ -418,7 +412,7 @@ export function applyGiftEffect(input = {}) {
     result = result || applied;
     if (applied.status !== 'applied' || !['tactical-shield'].includes(gift.effect)) break;
   }
-  if (result?.status === 'rejected') queueEvent('gift:rejected', { ...result, eventId, source, senderUsername });
+  if (result?.status === 'rejected') publishEngineEvent('gift:rejected', { ...result, eventId, source, senderUsername });
   return result || { status: 'rejected', reason: 'not-applied' };
 }
 
@@ -489,7 +483,7 @@ function tickPlayerCombat(now) {
     attacker.nextServerShotAt = now + 1600;
     const target = nearestOpponent(attacker, 260); if (!target) continue;
     const result = attackPlayer(attacker, target, { damage: BASE_ATTACK_DAMAGE, now, reason: 'combat' });
-    if (result.applied) queueEvent('combat:shot', { attackerId: attacker.id, targetId: target.id, damage: result.damageApplied, eliminated: result.eliminated, bountyClaimed: result.bountyClaimed });
+    if (result.applied) publishEngineEvent('combat:shot', { attackerId: attacker.id, targetId: target.id, damage: result.damageApplied, eliminated: result.eliminated, bountyClaimed: result.bountyClaimed });
   }
 }
 function tickEffects(now) {
@@ -507,7 +501,7 @@ function tickHazards(now) {
       for (const player of activePlayers()) {
         if (Math.hypot(player.x - hazard.x, player.y - hazard.y) <= hazard.radius) damagePlayer(player, hazard.damage, { allowElimination: false, now });
       }
-      queueEvent('boss:updated', { reason: 'meteor-impact', hazardId: hazard.id });
+      publishEngineEvent('boss:updated', { reason: 'meteor-impact', hazardId: hazard.id });
     }
     if (now < hazard.expiresAt) keep.push(hazard);
   }
@@ -534,10 +528,10 @@ function tickBoss(now) {
   }
   if (boss.attack && now >= boss.attack.impactAt) {
     for (const p of activePlayers()) if (Math.hypot(p.x - boss.attack.x, p.y - boss.attack.y) <= boss.attack.radius) damagePlayer(p, boss.attack.damage, { allowElimination: false, now });
-    boss.lastAttackAt = now; boss.attack = null; queueEvent('boss:updated', { reason: 'attack-resolved', boss: { ...boss } });
+    boss.lastAttackAt = now; boss.attack = null; publishEngineEvent('boss:updated', { reason: 'attack-resolved', boss: { ...boss } });
   } else if (!boss.attack && target && now - boss.lastAttackAt >= 8000) {
     boss.attack = { id: randomUUID(), x: target.x, y: target.y, radius: 120, damage: 22, warnedAt: now, impactAt: now + 3000, targetPlayerId: target.id };
-    queueEvent('boss:updated', { reason: 'attack-warning', boss: { ...boss } });
+    publishEngineEvent('boss:updated', { reason: 'attack-warning', boss: { ...boss } });
   }
   for (const p of activePlayers()) {
     if (Math.hypot(p.x - boss.x, p.y - boss.y) > 380) continue;
@@ -585,7 +579,7 @@ export function finish() {
 
 export function reset() {
   players.clear(); roundRecorded = false; roundGiftCount = 0;
-  giftUsage.clear(); giftCooldowns.clear(); processedGiftIds.clear(); pendingGifts.clear(); combatCooldowns.clear(); bossAttackCooldowns.clear(); bossDamage.clear(); engineEvents.length = 0;
+  giftUsage.clear(); giftCooldowns.clear(); processedGiftIds.clear(); pendingGifts.clear(); combatCooldowns.clear(); bossAttackCooldowns.clear(); bossDamage.clear();
   Object.assign(state, { phase: 'lobby', round: state.round + 1, roundId: randomUUID(), storm: 0, likes: 0, players: [], feed: [], winner: null, bountyTargetId: null, bountyTargetPlatformId: null, bountyClaimedBy: null, hazards: [], boss: emptyBoss(), bossCooldownUntil: 0, teamScores: { blue: { score: 0, survivors: 0, eliminations: 0 }, red: { score: 0, survivors: 0, eliminations: 0 } } });
   return state;
 }
