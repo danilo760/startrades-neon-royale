@@ -14,9 +14,7 @@ const ATTACK_COOLDOWN_MS = 850;
 const MAX_EVENT_LOG = 100;
 
 export const ARENA_BACKGROUNDS = ['default', 'cyberpunk', 'space', 'retro'];
-export const POWER_PRESETS = Object.freeze({
-  shot: { label: 'RAJADA ESTELAR', damage: BASE_ATTACK_DAMAGE, color: 0x2cefff, sound: 'shot' },
-});
+export const POWER_PRESETS = Object.freeze({ shot: { label: 'RAJADA ESTELAR', damage: BASE_ATTACK_DAMAGE, color: 0x2cefff, sound: 'shot' } });
 export const POWER_CATALOG = [];
 
 const emptyBoss = () => ({ id: null, active: false, hp: 0, maxHp: 0, x: 640, y: 360, radius: 72, spawnedAt: 0, expiresAt: 0, targetPlayerId: null, lastAttackAt: 0, attack: null, cooldownUntil: 0 });
@@ -28,18 +26,10 @@ export const state = {
   teamScores: { blue: { score: 0, survivors: 0, eliminations: 0 }, red: { score: 0, survivors: 0, eliminations: 0 } },
   powerCatalog: POWER_CATALOG,
   giftCatalog: publicGiftCatalog(),
-  hazards: [],
-  boss: emptyBoss(),
-  bossCooldownUntil: 0,
+  hazards: [], boss: emptyBoss(), bossCooldownUntil: 0,
   settings: {
-    agentEnabled: true,
-    teamMode: false,
-    arenaBackground: 'default',
-    voiceMode: 'male',
-    voiceIntensity: 3,
-    narratorStyle: 'explosive',
-    music: true,
-    sound: true,
+    agentEnabled: true, teamMode: false, arenaBackground: 'default', voiceMode: 'male', voiceIntensity: 3,
+    narratorStyle: 'explosive', music: true, sound: true,
     giftLimits: { perPlayerPerRound: 12, perRound: 120, pendingPerUser: 3, maxComboActivations: 2 },
   },
 };
@@ -131,30 +121,16 @@ export function join(username, teamChoice = null, bot = false, identity = {}) {
   if (!player) {
     const pos = spawnPoint();
     player = {
-      id: platformUserId,
-      username: displayName,
-      platformUserId,
+      id: platformUserId, username: displayName, platformUserId,
       avatarUrl: /^https:\/\//i.test(identity.avatarUrl || '') ? String(identity.avatarUrl).slice(0, 500) : '',
-      ...pos,
-      targetX: pos.x,
-      targetY: pos.y,
-      maxHp: 100,
-      hp: 100,
-      shield: 0,
-      shieldUntil: 0,
-      speedMultiplier: 1,
-      speedBoostUntil: 0,
-      energy: 0,
-      score: 0,
-      eliminations: 0,
-      alive: true,
-      skin: players.size % 4,
-      team: normalizeTeam(teamChoice) || balancedTeam(),
-      bot,
+      ...pos, targetX: pos.x, targetY: pos.y,
+      maxHp: 100, hp: 100, shield: 0, shieldUntil: 0,
+      speedMultiplier: 1, speedBoostUntil: 0,
+      hype: 0, starPowerUntil: 0,
+      energy: 0, score: 0, eliminations: 0, alive: true,
+      skin: players.size % 4, team: normalizeTeam(teamChoice) || balancedTeam(), bot,
       spawnInvulnerableUntil: state.phase === 'running' ? nowMs() + SPAWN_GRACE_MS : 0,
-      lastMoveAt: nowMs(),
-      wanderAt: 0,
-      nextServerShotAt: nowMs() + 1400,
+      lastMoveAt: nowMs(), wanderAt: 0, nextServerShotAt: nowMs() + 1400,
     };
     players.set(platformUserId, player);
     feed(`@${displayName} aterrissou na arena`, 'join');
@@ -173,25 +149,15 @@ export function addBots(names = []) { names.slice(0, 30).forEach((name) => join(
 export function start() {
   const leader = getLeaderboardTop();
   const now = nowMs();
-  state.phase = 'running';
-  state.winner = null;
-  state.roundId = randomUUID();
+  state.phase = 'running'; state.winner = null; state.roundId = randomUUID();
   state.bountyTargetPlatformId = leader?.platformUserId || leader?.id || null;
   state.bountyTargetId = [...players.values()].find((p) => p.platformUserId === state.bountyTargetPlatformId)?.id || null;
-  state.bountyClaimedBy = null;
-  state.hazards = [];
-  state.boss = emptyBoss();
-  state.bossCooldownUntil = 0;
-  roundRecorded = false;
-  roundGiftCount = 0;
+  state.bountyClaimedBy = null; state.hazards = []; state.boss = emptyBoss(); state.bossCooldownUntil = 0;
+  roundRecorded = false; roundGiftCount = 0;
   giftUsage.clear(); giftCooldowns.clear(); bossDamage.clear(); bossAttackCooldowns.clear(); combatCooldowns.clear();
   for (const player of players.values()) {
-    player.spawnInvulnerableUntil = now + SPAWN_GRACE_MS;
-    player.lastMoveAt = now;
-    player.wanderAt = now + 500 + Math.random() * 900;
-    player.shieldUntil = 0;
-    player.speedMultiplier = 1;
-    player.speedBoostUntil = 0;
+    player.spawnInvulnerableUntil = now + SPAWN_GRACE_MS; player.lastMoveAt = now; player.wanderAt = now + 500 + Math.random() * 900;
+    player.shield = 0; player.shieldUntil = 0; player.speedMultiplier = 1; player.speedBoostUntil = 0; player.hype = 0; player.starPowerUntil = 0;
   }
   feed(`RODADA ${state.round} INICIADA`, 'system');
   if (state.bountyTargetId) {
@@ -293,10 +259,22 @@ function nearestOpponent(player, maxDistance = Infinity) {
   return best;
 }
 
-function spawnMeteor(gift, beneficiary, now) {
-  const target = nearestOpponent(beneficiary) || activePlayers().find((p) => p.id !== beneficiary?.id) || beneficiary;
+function chooseNeutralMeteorTarget(now) {
+  const eligible = activePlayers().filter((p) => p.spawnInvulnerableUntil <= now);
+  const pool = eligible.length ? eligible : activePlayers();
+  if (!pool.length) return null;
+  const sorted = [...pool].sort((a, b) => a.id.localeCompare(b.id));
+  return sorted[state.hazards.length % sorted.length];
+}
+function spawnMeteor(gift, now) {
+  const target = chooseNeutralMeteorTarget(now);
   if (!target) return null;
-  const hazard = { id: randomUUID(), type: 'meteor', x: target.x, y: target.y, radius: 110, damage: Math.min(30, Math.max(1, gift.magnitude || 24)), createdAt: now, impactAt: now + Math.min(2200, Math.max(900, gift.durationMs || 1800)), expiresAt: now + 3000, visualEffect: gift.visualEffect };
+  const hazard = {
+    id: randomUUID(), type: 'meteor', x: target.x, y: target.y, targetPlayerId: target.id,
+    radius: 110, damage: Math.min(24, Math.max(1, gift.magnitude || 22)), createdAt: now,
+    impactAt: now + Math.min(2400, Math.max(1400, gift.durationMs || 2000)), expiresAt: now + 3400,
+    visualEffect: gift.visualEffect, resolved: false,
+  };
   state.hazards.push(hazard); state.hazards = state.hazards.slice(-12);
   return hazard;
 }
@@ -323,7 +301,7 @@ export function spawnBoss({ source = 'system', now = nowMs() } = {}) {
   return { applied: true, boss: state.boss };
 }
 
-function clearBoss(reason, { reward = false, now = nowMs() } = {}) {
+function clearBoss(reason, { reward = false } = {}) {
   if (!state.boss.active) return null;
   const old = { ...state.boss };
   if (reward) {
@@ -343,9 +321,7 @@ function clearBoss(reason, { reward = false, now = nowMs() } = {}) {
     queueEvent('boss:escaped', { boss: old });
   }
   state.boss = { ...emptyBoss(), cooldownUntil: state.bossCooldownUntil };
-  bossDamage.clear(); bossAttackCooldowns.clear();
-  sync();
-  return old;
+  bossDamage.clear(); bossAttackCooldowns.clear(); sync(); return old;
 }
 
 function applyResolvedGift({ gift, senderUserId, senderUsername, giftName, repeatCount, source, eventId, targetPlayer, now, fromPending = false }) {
@@ -353,32 +329,38 @@ function applyResolvedGift({ gift, senderUserId, senderUsername, giftName, repea
   const cooldown = canUseGift(targetPlayer.id, gift, now);
   if (!cooldown.ok && gift.effect !== 'colossus') return { status: 'rejected', reason: 'cooldown', cooldownUntil: cooldown.cooldownUntil };
   let effectResult = { applied: true };
-  if (gift.effect === 'heal') {
-    if (targetPlayer.hp < targetPlayer.maxHp) {
-      const heal = Math.min(20, targetPlayer.maxHp * 0.2, targetPlayer.maxHp - targetPlayer.hp);
-      targetPlayer.hp += heal; effectResult = { applied: true, heal };
-    } else {
-      targetPlayer.shield = Math.max(targetPlayer.shield, 10);
-      targetPlayer.shieldUntil = now + Math.min(5000, Math.max(1, gift.durationMs || 5000));
-      effectResult = { applied: true, shield: 10, durationMs: targetPlayer.shieldUntil - now };
-    }
+
+  if (gift.effect === 'entry-boost') {
+    targetPlayer.speedMultiplier = Math.max(targetPlayer.speedMultiplier || 1, Math.min(1.2, Math.max(1, Number(gift.magnitude) || 1.2)));
+    targetPlayer.speedBoostUntil = Math.max(targetPlayer.speedBoostUntil || 0, now + Math.min(5000, Math.max(1000, gift.durationMs || 5000)));
+    effectResult = { applied: true, speedMultiplier: targetPlayer.speedMultiplier, durationMs: targetPlayer.speedBoostUntil - now, entryBonus: true };
+  } else if (gift.effect === 'tactical-shield') {
+    const heal = Math.min(15, targetPlayer.maxHp * 0.15, Math.max(0, targetPlayer.maxHp - targetPlayer.hp));
+    targetPlayer.hp += heal;
+    targetPlayer.shield = Math.max(targetPlayer.shield, Math.min(10, Math.max(1, gift.magnitude || 10)));
+    targetPlayer.shieldUntil = Math.max(targetPlayer.shieldUntil || 0, now + Math.min(3000, Math.max(1000, gift.durationMs || 3000)));
+    effectResult = { applied: true, heal, shield: targetPlayer.shield, durationMs: targetPlayer.shieldUntil - now };
   } else if (gift.effect === 'speed') {
-    targetPlayer.speedMultiplier = Math.min(1.5, Math.max(1, Number(gift.magnitude) || 1.5));
-    targetPlayer.speedBoostUntil = now + Math.min(5000, Math.max(1, gift.durationMs || 5000));
+    targetPlayer.speedMultiplier = Math.min(1.5, Math.max(targetPlayer.speedMultiplier || 1, Number(gift.magnitude) || 1.35));
+    targetPlayer.speedBoostUntil = Math.max(targetPlayer.speedBoostUntil || 0, now + Math.min(5000, Math.max(1000, gift.durationMs || 5000)));
     effectResult = { applied: true, speedMultiplier: targetPlayer.speedMultiplier, durationMs: targetPlayer.speedBoostUntil - now };
   } else if (gift.effect === 'extra-projectile') {
     const target = nearestOpponent(targetPlayer, 520);
     effectResult = target ? attackPlayer(targetPlayer, target, { damage: 7, now, reason: 'gift-extra-projectile' }) : { applied: false, reason: 'no-target' };
   } else if (gift.effect === 'meteor') {
-    const hazard = spawnMeteor(gift, targetPlayer, now);
-    effectResult = hazard ? { applied: true, hazardId: hazard.id } : { applied: false, reason: 'no-target' };
-  } else if (gift.effect === 'premium-shield') {
-    targetPlayer.shield = Math.max(targetPlayer.shield, Math.min(20, Math.max(1, gift.magnitude || 15)));
-    targetPlayer.shieldUntil = now + Math.min(3000, Math.max(1, gift.durationMs || 3000));
-    effectResult = { applied: true, shield: targetPlayer.shield, durationMs: targetPlayer.shieldUntil - now };
+    const hazard = spawnMeteor(gift, now);
+    effectResult = hazard ? { applied: true, hazardId: hazard.id, hazardTargetPlayerId: hazard.targetPlayerId } : { applied: false, reason: 'no-target' };
+  } else if (gift.effect === 'star-power') {
+    const hypeGain = clamp(Math.trunc(Number(gift.magnitude) || 100), 1, 250);
+    targetPlayer.hype = clamp((targetPlayer.hype || 0) + hypeGain, 0, 999);
+    targetPlayer.starPowerUntil = Math.max(targetPlayer.starPowerUntil || 0, now + Math.min(60_000, Math.max(5000, gift.durationMs || 60_000)));
+    effectResult = { applied: true, hypeGain, hype: targetPlayer.hype, durationMs: targetPlayer.starPowerUntil - now, scoreMultiplier: 1 };
   } else if (gift.effect === 'colossus') {
     effectResult = spawnBoss({ source, now });
+  } else {
+    effectResult = { applied: false, reason: 'unsupported-effect' };
   }
+
   if (effectResult.applied && gift.effect !== 'colossus') setGiftCooldown(cooldown.key, gift, now);
   const payload = {
     eventId, source, tier: gift.tier, effect: gift.effect, visualEffect: gift.visualEffect, narrationPriority: gift.narrationPriority,
@@ -434,7 +416,7 @@ export function applyGiftEffect(input = {}) {
   for (let i = 0; i < acceptedActivations; i++) {
     const applied = applyResolvedGift({ gift, eventId: i === 0 ? eventId : `${eventId}:${i + 1}`, senderUserId, senderUsername, giftName: input.giftName, repeatCount: acceptedActivations, source, targetPlayer: beneficiary.player, now: now + i, fromPending: false });
     result = result || applied;
-    if (applied.status !== 'applied' || gift.effect !== 'heal') break;
+    if (applied.status !== 'applied' || !['tactical-shield'].includes(gift.effect)) break;
   }
   if (result?.status === 'rejected') queueEvent('gift:rejected', { ...result, eventId, source, senderUsername });
   return result || { status: 'rejected', reason: 'not-applied' };
@@ -492,34 +474,29 @@ function tickMovement(now) {
     player.lastMoveAt = now;
     let dx = player.targetX - player.x, dy = player.targetY - player.y, distance = Math.hypot(dx, dy);
     if (!player.wanderAt || now >= player.wanderAt || distance < 10) {
-      player.targetX = 90 + Math.random() * (ARENA_W - 180);
-      player.targetY = 90 + Math.random() * (ARENA_H - 180);
-      player.wanderAt = now + 1600 + Math.random() * 1900;
+      player.targetX = 90 + Math.random() * (ARENA_W - 180); player.targetY = 90 + Math.random() * (ARENA_H - 180); player.wanderAt = now + 1600 + Math.random() * 1900;
       dx = player.targetX - player.x; dy = player.targetY - player.y; distance = Math.hypot(dx, dy);
     }
     if (distance > 1 && dt > 0) {
       const step = Math.min(distance, 38 * clamp(player.speedMultiplier || 1, 1, 1.5) * dt);
-      player.x = clamp(player.x + dx / distance * step, 55, ARENA_W - 55);
-      player.y = clamp(player.y + dy / distance * step, 55, ARENA_H - 55);
+      player.x = clamp(player.x + dx / distance * step, 55, ARENA_W - 55); player.y = clamp(player.y + dy / distance * step, 55, ARENA_H - 55);
     }
   }
 }
-
 function tickPlayerCombat(now) {
   for (const attacker of activePlayers()) {
     if ((attacker.nextServerShotAt || 0) > now) continue;
     attacker.nextServerShotAt = now + 1600;
-    const target = nearestOpponent(attacker, 260);
-    if (!target) continue;
+    const target = nearestOpponent(attacker, 260); if (!target) continue;
     const result = attackPlayer(attacker, target, { damage: BASE_ATTACK_DAMAGE, now, reason: 'combat' });
     if (result.applied) queueEvent('combat:shot', { attackerId: attacker.id, targetId: target.id, damage: result.damageApplied, eliminated: result.eliminated, bountyClaimed: result.bountyClaimed });
   }
 }
-
 function tickEffects(now) {
   for (const p of players.values()) {
     if (p.shieldUntil && p.shieldUntil <= now) { p.shield = 0; p.shieldUntil = 0; }
     if (p.speedBoostUntil && p.speedBoostUntil <= now) { p.speedMultiplier = 1; p.speedBoostUntil = 0; }
+    if (p.starPowerUntil && p.starPowerUntil <= now) p.starPowerUntil = 0;
   }
 }
 function tickHazards(now) {
@@ -528,8 +505,7 @@ function tickHazards(now) {
     if (hazard.type === 'meteor' && !hazard.resolved && now >= hazard.impactAt) {
       hazard.resolved = true;
       for (const player of activePlayers()) {
-        const distance = Math.hypot(player.x - hazard.x, player.y - hazard.y);
-        if (distance <= hazard.radius) damagePlayer(player, hazard.damage, { allowElimination: false, now });
+        if (Math.hypot(player.x - hazard.x, player.y - hazard.y) <= hazard.radius) damagePlayer(player, hazard.damage, { allowElimination: false, now });
       }
       queueEvent('boss:updated', { reason: 'meteor-impact', hazardId: hazard.id });
     }
@@ -548,21 +524,17 @@ function chooseBossTarget() {
 function tickBoss(now) {
   const boss = state.boss;
   if (!boss.active) return;
-  if (state.phase !== 'running') { clearBoss('round-ended', { reward: false, now }); return; }
-  if (now >= boss.expiresAt) { clearBoss('expired', { reward: false, now }); return; }
-  const target = chooseBossTarget();
-  boss.targetPlayerId = target?.id || null;
+  if (state.phase !== 'running') { clearBoss('round-ended', { reward: false }); return; }
+  if (now >= boss.expiresAt) { clearBoss('expired', { reward: false }); return; }
+  const target = chooseBossTarget(); boss.targetPlayerId = target?.id || null;
   const dt = clamp((now - bossLastTickAt) / 1000, 0, 1); bossLastTickAt = now;
   if (target) {
     const dx = target.x - boss.x, dy = target.y - boss.y, d = Math.hypot(dx, dy) || 1;
     const step = Math.min(d, 42 * dt); boss.x = clamp(boss.x + dx / d * step, 90, 1190); boss.y = clamp(boss.y + dy / d * step, 90, 630);
   }
   if (boss.attack && now >= boss.attack.impactAt) {
-    for (const p of activePlayers()) {
-      if (Math.hypot(p.x - boss.attack.x, p.y - boss.attack.y) <= boss.attack.radius) damagePlayer(p, boss.attack.damage, { allowElimination: false, now });
-    }
-    boss.lastAttackAt = now; boss.attack = null;
-    queueEvent('boss:updated', { reason: 'attack-resolved', boss: { ...boss } });
+    for (const p of activePlayers()) if (Math.hypot(p.x - boss.attack.x, p.y - boss.attack.y) <= boss.attack.radius) damagePlayer(p, boss.attack.damage, { allowElimination: false, now });
+    boss.lastAttackAt = now; boss.attack = null; queueEvent('boss:updated', { reason: 'attack-resolved', boss: { ...boss } });
   } else if (!boss.attack && target && now - boss.lastAttackAt >= 8000) {
     boss.attack = { id: randomUUID(), x: target.x, y: target.y, radius: 120, damage: 22, warnedAt: now, impactAt: now + 3000, targetPlayerId: target.id };
     queueEvent('boss:updated', { reason: 'attack-warning', boss: { ...boss } });
@@ -572,7 +544,7 @@ function tickBoss(now) {
     const until = bossAttackCooldowns.get(p.id) || 0; if (until > now) continue;
     bossAttackCooldowns.set(p.id, now + 1500);
     const damage = 6; boss.hp = Math.max(0, boss.hp - damage); bossDamage.set(p.id, (bossDamage.get(p.id) || 0) + damage);
-    if (boss.hp <= 0) { clearBoss('defeated', { reward: true, now }); return; }
+    if (boss.hp <= 0) { clearBoss('defeated', { reward: true }); return; }
   }
 }
 function tickStormDamage(now) {
@@ -581,8 +553,7 @@ function tickStormDamage(now) {
   for (const p of activePlayers()) {
     if (Math.hypot(p.x - 640, p.y - 360) <= safeRadius) continue;
     if ((p.nextStormHitAt || 0) > now) continue;
-    p.nextStormHitAt = now + 1000;
-    applyStormDamage(p.id);
+    p.nextStormHitAt = now + 1000; applyStormDamage(p.id);
   }
 }
 export function tickGame(now = nowMs()) {
@@ -593,8 +564,7 @@ export function tickGame(now = nowMs()) {
 
 export function finish() {
   if (state.boss.active) clearBoss('round-ended', { reward: false });
-  state.hazards = [];
-  state.phase = 'ended'; sync();
+  state.hazards = []; state.phase = 'ended'; sync();
   if (state.settings.teamMode && players.size > 0) {
     const blue = { type: 'team', team: 'blue', label: 'TIME AZUL', ...state.teamScores.blue };
     const red = { type: 'team', team: 'red', label: 'TIME VERMELHO', ...state.teamScores.red };
@@ -614,7 +584,8 @@ export function finish() {
 }
 
 export function reset() {
-  players.clear(); roundRecorded = false; roundGiftCount = 0; giftUsage.clear(); giftCooldowns.clear(); processedGiftIds.clear(); pendingGifts.clear(); combatCooldowns.clear(); bossAttackCooldowns.clear(); bossDamage.clear(); engineEvents.length = 0;
+  players.clear(); roundRecorded = false; roundGiftCount = 0;
+  giftUsage.clear(); giftCooldowns.clear(); processedGiftIds.clear(); pendingGifts.clear(); combatCooldowns.clear(); bossAttackCooldowns.clear(); bossDamage.clear(); engineEvents.length = 0;
   Object.assign(state, { phase: 'lobby', round: state.round + 1, roundId: randomUUID(), storm: 0, likes: 0, players: [], feed: [], winner: null, bountyTargetId: null, bountyTargetPlatformId: null, bountyClaimedBy: null, hazards: [], boss: emptyBoss(), bossCooldownUntil: 0, teamScores: { blue: { score: 0, survivors: 0, eliminations: 0 }, red: { score: 0, survivors: 0, eliminations: 0 } } });
   return state;
 }
@@ -624,6 +595,7 @@ export const __test = {
   get pendingGifts() { return pendingGifts; },
   setPlayerHp(id, hp) { const p = players.get(id); if (p) p.hp = clamp(hp, 0, p.maxHp); sync(); },
   setPlayerAlive(id, alive) { const p = players.get(id); if (p) p.alive = Boolean(alive); sync(); },
+  setPlayerPosition(id, x, y) { const p = players.get(id); if (p) { p.x = x; p.y = y; p.targetX = x; p.targetY = y; sync(); } },
   expireSpawnProtection(id) { const p = players.get(id); if (p) p.spawnInvulnerableUntil = 0; },
   clearGiftCooldowns() { giftCooldowns.clear(); },
 };

@@ -83,26 +83,31 @@ export class GameScene extends Phaser.Scene {
       const shadow = this.add.ellipse(0, 19, 58, 20, 0x000000, .5);
       const glow = this.add.circle(0, 9, 31, skinColor, .13).setStrokeStyle(1, skinColor, .45);
       const teamAura = this.add.circle(0, 8, 37, 0x35eaff, .08).setStrokeStyle(3, 0x35eaff, .9).setVisible(false);
+      const starAura = this.add.circle(0, 7, 45, 0xffd24d, .08).setStrokeStyle(4, 0xffd24d, .95).setVisible(false);
       const sprite = this.add.sprite(0, 0, 'fighters', (p.skin % 4) * 4).setScale(.25).setOrigin(.5, .72);
       const avatarBase = this.add.circle(0, -4, 22, 0x2cefff, 1).setStrokeStyle(3, 0xffffff, .65);
       const crown = this.add.text(0, -78, '👑', { fontSize: '25px' }).setOrigin(.5).setVisible(false);
+      const starBadge = this.add.text(0, -82, '★', { fontFamily: 'Arial', fontSize: '22px', fontStyle: 'bold', color: '#ffd24d', stroke: '#4a2500', strokeThickness: 4 }).setOrigin(.5).setVisible(false);
       const name = this.add.text(0, -52, `@${p.username || p.id}`, { fontFamily: 'Arial', fontSize: '13px', fontStyle: 'bold', color: '#ffffff', stroke: '#05030c', strokeThickness: 5 }).setOrigin(.5);
       const hpBg = this.add.rectangle(0, -34, 68, 8, 0x160f24).setStrokeStyle(1, 0xffffff, .12);
       const hp = this.add.rectangle(-34, -34, 68, 6, 0x75ff4d).setOrigin(0, .5);
       const shield = this.add.rectangle(-34, -25, 0, 4, 0x2cefff).setOrigin(0, .5);
-      const container = this.add.container(p.x, p.y, [shadow, glow, teamAura, sprite, avatarBase, crown, name, hpBg, hp, shield]).setDepth(p.y).setScale(.15).setAlpha(0);
-      f = { container, sprite, avatarBase, glow, teamAura, crown, name, hp, shield, data: p, wanderAt: 0, wasAlive: true, trailAt: 0 };
+      const container = this.add.container(p.x, p.y, [shadow, glow, teamAura, starAura, sprite, avatarBase, crown, starBadge, name, hpBg, hp, shield]).setDepth(p.y).setScale(.15).setAlpha(0);
+      f = { container, sprite, avatarBase, glow, teamAura, starAura, starBadge, crown, name, hp, shield, data: p, wanderAt: 0, wasAlive: true, trailAt: 0, starTrailAt: 0 };
       this.fighters.set(p.id, f);
       this.tweens.add({ targets: crown, y: -85, duration: 700, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+      this.tweens.add({ targets: starBadge, y: -88, duration: 620, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
       this.tweens.add({ targets: container, scale: 1, alpha: 1, duration: 520, ease: 'Back.easeOut' });
       this.pooledBurst(p.x, p.y, skinColor, 12, 55); sfx('join');
     }
     if (f.wasAlive && !p.alive) this.eliminationEffect(f);
     const teamColor = TEAM_COLORS[p.team] || TEAM_COLORS.blue;
-    f.data = p; f.wasAlive = p.alive; f.name.setText(`@${p.username || p.id}`);
+    const starActive = Boolean(p.alive && p.starPowerUntil);
+    f.data = p; f.wasAlive = p.alive; f.name.setText(`@${p.username || p.id}${starActive ? ` • HYPE ${p.hype || 0}` : ''}`);
     f.hp.width = 68 * (p.hp || 0) / Math.max(1, p.maxHp || 100); f.shield.width = 68 * Math.min(100, p.shield || 0) / 100;
-    f.teamAura.setFillStyle(teamColor, .08).setStrokeStyle(3, teamColor, .9).setVisible(Boolean(this.state?.settings?.teamMode && p.alive));
-    f.avatarBase.setFillStyle(this.state?.settings?.teamMode ? teamColor : 0x2cefff, 1);
+    f.teamAura.setFillStyle(teamColor, .08).setStrokeStyle(3, teamColor, .9).setVisible(Boolean(this.state?.settings?.teamMode && p.alive && !starActive));
+    f.starAura.setVisible(starActive); f.starBadge.setVisible(starActive);
+    f.avatarBase.setFillStyle(starActive ? 0xffd24d : this.state?.settings?.teamMode ? teamColor : 0x2cefff, 1);
     f.crown.setVisible(Boolean(p.alive && this.state?.bountyTargetId === p.id));
     if (p.avatarUrl && f.avatarLoadedUrl !== p.avatarUrl && f.avatarLoadingUrl !== p.avatarUrl) this.loadAvatar(f, p);
     if (p.alive) f.container.setAlpha(1); return f;
@@ -129,7 +134,7 @@ export class GameScene extends Phaser.Scene {
     this.load.once(`filecomplete-image-${key}`, success); this.load.on('loaderror', failure); this.load.image(key, p.avatarUrl); if (!this.load.isLoading()) this.load.start();
   }
   destroyFighter(id, f) {
-    this.tweens.killTweensOf(f.container); this.tweens.killTweensOf(f.crown);
+    this.tweens.killTweensOf(f.container); this.tweens.killTweensOf(f.crown); this.tweens.killTweensOf(f.starBadge);
     f.avatar?.clearMask(true); f.avatarMaskGraphic?.destroy(); f.container.destroy();
     if (f.avatarTextureKey && this.textures.exists(f.avatarTextureKey)) this.textures.remove(f.avatarTextureKey);
     this.fighters.delete(id);
@@ -153,14 +158,12 @@ export class GameScene extends Phaser.Scene {
   }
   triggerGift(event) {
     const f = this.fighters.get(event.targetPlayerId); if (!f) return;
-    if (event.effect === 'heal') {
-      if (event.result?.shield) this.shieldEffect(f, false);
-      const heart = this.add.text(f.container.x, f.container.y - 55, '♥', { fontSize: '34px', color: '#75ff7b', stroke: '#08210d', strokeThickness: 5 }).setOrigin(.5).setDepth(1500);
-      this.tweens.add({ targets: heart, y: heart.y - 85, alpha: 0, scale: 1.35, duration: 900, onComplete: () => heart.destroy() }); this.pooledBurst(f.container.x, f.container.y, 0x75ff7b, 14, 75); sfx('heal');
-    } else if (event.effect === 'premium-shield') this.shieldEffect(f, true);
-    else if (event.effect === 'speed') { this.pooledBurst(f.container.x, f.container.y, 0x2cefff, 18, 105); this.floatingText(f.container.x, f.container.y - 45, 'VELOCIDADE 1.5X', '#2cefff', 18); }
+    if (event.effect === 'entry-boost') { this.pooledBurst(f.container.x, f.container.y, 0x2cefff, 18, 105); this.floatingText(f.container.x, f.container.y - 45, 'BOOST DE ENTRADA 1.2X', '#2cefff', 18); }
+    else if (event.effect === 'tactical-shield') { this.shieldEffect(f, false); if (event.result?.heal) this.floatingText(f.container.x, f.container.y - 45, `+${Math.ceil(event.result.heal)} HP`, '#75ff7b', 18); }
+    else if (event.effect === 'speed') { this.pooledBurst(f.container.x, f.container.y, 0x2cefff, 18, 105); this.floatingText(f.container.x, f.container.y - 45, 'IMPULSO NEON', '#2cefff', 18); }
     else if (event.effect === 'extra-projectile' && event.result?.targetId) this.renderCombatShot({ attackerId: event.targetPlayerId, targetId: event.result.targetId, gift: true });
     else if (event.effect === 'meteor') this.cameras.main.flash(120, 255, 174, 44, false, undefined, .08);
+    else if (event.effect === 'star-power') { this.cameras.main.flash(180, 255, 210, 77, false, undefined, .1); this.pooledBurst(f.container.x, f.container.y, 0xffd24d, 30, 170); this.floatingText(f.container.x, f.container.y - 52, `STAR POWER • +${event.result?.hypeGain || 100} HYPE`, '#ffd24d', 21); }
     else if (event.effect === 'colossus') { this.cameras.main.flash(250, 255, 210, 77, false, undefined, .12); this.pooledBurst(640, 360, 0xffd24d, 30, 220); }
   }
   renderCombatShot(event) {
@@ -194,7 +197,8 @@ export class GameScene extends Phaser.Scene {
   }
   destroyBossView() {
     if (!this.bossView) return;
-    if (this.bossView.warning) { this.tweens.killTweensOf(this.bossView.warning); this.bossView.warning.destroy(); } this.bossView.tween?.stop(); this.tweens.killTweensOf(this.bossView.container); this.bossView.container.destroy(); this.bossView = null;
+    if (this.bossView.warning) { this.tweens.killTweensOf(this.bossView.warning); this.bossView.warning.destroy(); }
+    this.bossView.tween?.stop(); this.tweens.killTweensOf(this.bossView.container); this.bossView.container.destroy(); this.bossView = null;
   }
   syncHazards(hazards) {
     const active = new Set();
@@ -237,6 +241,11 @@ export class GameScene extends Phaser.Scene {
       if ((f.data.speedMultiplier || 1) > 1 && time > f.trailAt) {
         f.trailAt = time + 90; const dot = this.acquire(this.dotPool);
         if (dot) { dot.setPosition(f.container.x, f.container.y + 18).setRadius(5).setFillStyle(0x2cefff, .55).setVisible(true).setActive(true); this.tweens.add({ targets: dot, alpha: 0, scale: 0, duration: 320, onComplete: () => this.release(dot) }); }
+      }
+      if (f.data.starPowerUntil && time > f.starTrailAt) {
+        f.starTrailAt = time + 120; f.starAura.alpha = .08 + (Math.sin(time / 130) + 1) * .07;
+        const dot = this.acquire(this.dotPool);
+        if (dot) { dot.setPosition(f.container.x + Phaser.Math.Between(-24, 24), f.container.y + Phaser.Math.Between(-28, 22)).setRadius(Phaser.Math.Between(3, 6)).setFillStyle(0xffd24d, .8).setVisible(true).setActive(true); this.tweens.add({ targets: dot, y: dot.y - 35, alpha: 0, scale: 0, duration: 520, onComplete: () => this.release(dot) }); }
       }
     });
   }

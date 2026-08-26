@@ -6,7 +6,16 @@ const post = async (url, body = {}, token = '') => {
   if (!response.ok) throw new Error(data.error || `Falha ${response.status}`);
   return data;
 };
-const giftLabel = (gift) => `${gift.aliases?.[0] || gift.giftId} · ${gift.tier} · ${gift.effect}`;
+const EFFECT_LABELS = {
+  'entry-boost': 'Bônus de entrada 1.2x / 5s',
+  'tactical-shield': 'Cura leve + escudo curto',
+  speed: 'Impulso Neon balanceado',
+  'extra-projectile': 'Projétil extra com cooldown',
+  meteor: 'Meteoro telegrafado / alvo neutro',
+  'star-power': 'Star Power + Hype / score x1',
+  colossus: 'Evento cooperativo Colossus',
+};
+const giftLabel = (gift) => `${gift.aliases?.[0] || gift.giftId} · ${gift.tier} · ${EFFECT_LABELS[gift.effect] || gift.effect}`;
 
 export function Control() {
   const [s, setS] = useState({ players: [], settings: {}, giftCatalog: [], boss: { active: false } });
@@ -30,6 +39,7 @@ export function Control() {
   }, []);
 
   const alive = useMemo(() => s.players.filter((p) => p.alive), [s.players]);
+  const selectedGift = useMemo(() => (s.giftCatalog || []).find((g) => String(g.giftId) === String(selectedGiftId)) || null, [s.giftCatalog, selectedGiftId]);
   useEffect(() => { if (!alive.some((p) => p.id === selectedPlayerId)) setSelectedPlayerId(alive[0]?.id || ''); }, [alive, selectedPlayerId]);
   useEffect(() => { if (s.giftCatalog?.length && !s.giftCatalog.some((g) => String(g.giftId) === String(selectedGiftId))) setSelectedGiftId(String(s.giftCatalog[0].giftId)); }, [s.giftCatalog, selectedGiftId]);
 
@@ -39,7 +49,7 @@ export function Control() {
     catch (error) { setNotice(`Erro: ${error.message}`); return null; }
   };
   const changeMap = async (arenaBackground) => { setMapPending(true); try { await run('/api/settings', { arenaBackground }, `Mapa ${arenaBackground} ativado`); } finally { setMapPending(false); } };
-  const simulateGift = () => selectedPlayerId && selectedGiftId && run('/api/admin/gift', { targetPlayerId: selectedPlayerId, giftId: selectedGiftId }, 'Gift simulado em MODO DE TESTE');
+  const simulateGift = () => selectedPlayerId && selectedGiftId && run('/api/admin/gift', { targetPlayerId: selectedPlayerId, giftId: selectedGiftId }, `Simulado: ${selectedGift ? EFFECT_LABELS[selectedGift.effect] || selectedGift.effect : 'Gift'}`);
   const invokeBoss = () => run('/api/admin/boss', {}, 'Pedido de Colossus Neon enviado');
   const boss = s.boss || { active: false }, bossCooldownMs = Math.max(0, (s.bossCooldownUntil || boss.cooldownUntil || 0) - clock);
   const bossStatus = boss.active ? `${Math.ceil(boss.hp || 0)} / ${boss.maxHp || 0} HP` : bossCooldownMs > 0 ? `Cooldown ${Math.ceil(bossCooldownMs / 1000)}s` : 'Disponível';
@@ -72,9 +82,9 @@ export function Control() {
     </section>
 
     <section className="mappingSection">
-      <div className="sectionHeading"><div><small>SIMULADOR ADMINISTRATIVO</small><h2>MODO DE TESTE — TikTok LIVE Gifts</h2><p>O cliente escolhe somente jogador e Gift da allowlist. Força, duração e magnitude são definidas no servidor.</p></div><span className="legendBadge">MODO DE TESTE</span></div>
+      <div className="sectionHeading"><div><small>SIMULADOR ADMINISTRATIVO</small><h2>MODO DE TESTE — Gifts balanceados</h2><p>O cliente escolhe somente jogador e Gift allowlisted. Magnitude, duração, alvo do meteoro e efeitos competitivos são decididos no servidor.</p></div><span className="legendBadge">MODO DE TESTE</span></div>
       <div className="mappingForm"><label>Jogador por ID<select value={selectedPlayerId} onChange={(e) => setSelectedPlayerId(e.target.value)}>{alive.length ? alive.map((p) => <option key={p.id} value={p.id}>@{p.username || p.id} · ID {p.id}</option>) : <option value="">Nenhum jogador ativo</option>}</select></label><label>Gift allowlisted<select value={selectedGiftId} onChange={(e) => setSelectedGiftId(e.target.value)}>{(s.giftCatalog || []).map((g) => <option key={g.giftId} value={String(g.giftId)}>{giftLabel(g)}</option>)}</select></label><button className="primary" disabled={!config.mock || !selectedPlayerId || !selectedGiftId} onClick={simulateGift}>SIMULAR GIFT</button><button className="primary" disabled={!config.mock || !alive.length} onClick={invokeBoss}>INVOCAR COLOSSUS NEON</button></div>
-      <div className="mappingList"><div className="mappingRow"><b>COLOSSUS NEON</b><span>{boss.active ? `${Math.ceil(boss.hp)} / ${boss.maxHp} HP` : 'INATIVO'}</span><em>{bossStatus}</em><span>{boss.active && boss.expiresAt ? `${Math.max(0, Math.ceil((boss.expiresAt - clock) / 1000))}s restantes` : '45s por invocação'}</span></div></div>
+      <div className="mappingList"><div className="mappingRow"><b>EFEITO SELECIONADO</b><span>{selectedGift ? EFFECT_LABELS[selectedGift.effect] || selectedGift.effect : '—'}</span><em>{selectedGift ? `${selectedGift.durationMs || 0}ms · cooldown ${selectedGift.cooldownMs || 0}ms` : '—'}</em><span>{selectedGift?.effect === 'star-power' ? 'Hype/status apenas • score x1' : selectedGift?.effect === 'meteor' ? 'Área avisada • não causa morte inevitável' : 'Servidor autoritativo'}</span></div><div className="mappingRow"><b>COLOSSUS NEON</b><span>{boss.active ? `${Math.ceil(boss.hp)} / ${boss.maxHp} HP` : 'INATIVO'}</span><em>{bossStatus}</em><span>{boss.active && boss.expiresAt ? `${Math.max(0, Math.ceil((boss.expiresAt - clock) / 1000))}s restantes` : '45s por invocação'}</span></div></div>
       <p><strong>SIMULAÇÃO:</strong> esses eventos usam <code>source: control-panel</code> e não representam receita, Gifts reais ou qualquer prêmio de valor econômico.</p>
     </section>
 
@@ -85,7 +95,7 @@ export function Control() {
         <div className="audioToggles"><label className="toggle compact"><span><b>Trilha eletrônica</b></span><input type="checkbox" checked={s.settings?.music ?? true} onChange={(e) => run('/api/settings', { music: e.target.checked }, 'Música atualizada')}/></label><label className="toggle compact"><span><b>Efeitos sonoros</b></span><input type="checkbox" checked={s.settings?.sound ?? true} onChange={(e) => run('/api/settings', { sound: e.target.checked }, 'Efeitos atualizados')}/></label></div>
       </article>
 
-      <article className="commandCard rosterCard"><div className="cardTitle"><span>05</span><div><h2>Combatentes</h2><p>IDs estáveis e telemetria do servidor</p></div></div><div className="roster">{s.players.length ? s.players.map((p, i) => <div key={p.id} className={`${p.alive ? '' : 'dead'} team-${p.team || 'blue'}`}><b><i>{i + 1}</i>{s.bountyTargetId === p.id ? '👑 ' : ''}@{p.username || p.id}</b><span>{s.settings?.teamMode && <em>{p.team === 'red' ? 'VERMELHO' : 'AZUL'}</em>} ID {p.id}</span><strong>{Math.ceil(p.hp || 0)} HP · {Math.ceil(p.shield || 0)} ESC · {p.score || 0} PTS</strong></div>) : <span className="empty">Nenhum combatente na arena.</span>}</div></article>
+      <article className="commandCard rosterCard"><div className="cardTitle"><span>05</span><div><h2>Combatentes</h2><p>IDs estáveis, Hype e telemetria do servidor</p></div></div><div className="roster">{s.players.length ? s.players.map((p, i) => <div key={p.id} className={`${p.alive ? '' : 'dead'} team-${p.team || 'blue'}`}><b><i>{i + 1}</i>{s.bountyTargetId === p.id ? '👑 ' : ''}{p.starPowerUntil ? '⭐ ' : ''}@{p.username || p.id}</b><span>{s.settings?.teamMode && <em>{p.team === 'red' ? 'VERMELHO' : 'AZUL'}</em>} ID {p.id}</span><strong>{Math.ceil(p.hp || 0)} HP · {Math.ceil(p.shield || 0)} ESC · {p.score || 0} PTS · {p.hype || 0} HYPE</strong></div>) : <span className="empty">Nenhum combatente na arena.</span>}</div></article>
     </section>
   </main>;
 }

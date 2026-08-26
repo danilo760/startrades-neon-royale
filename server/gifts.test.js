@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { GiftEventLedger, normalizeGiftEvent, resolveGiftDefinition, sanitizeNarrationName } from './gifts.js';
 
-test('resolve gift by ID before alias', () => {
-  assert.equal(resolveGiftDefinition('5655', 'Universe').effect, 'heal');
+test('resolve gift by ID before alias and preserve premium split', () => {
+  assert.equal(resolveGiftDefinition('5655', 'Universe').effect, 'entry-boost');
+  assert.equal(resolveGiftDefinition('', 'Leão').effect, 'star-power');
   assert.equal(resolveGiftDefinition('', 'Universo').effect, 'colossus');
+  assert.equal(resolveGiftDefinition('', 'Foguete').effect, 'meteor');
 });
 
 test('sanitize identity and display fields without using username as stable id', () => {
@@ -27,8 +29,7 @@ test('combo intermediate is pending and final applies confirmed count once', () 
   assert.equal(ledger.ingest({ ...base, msgId: 'm1', repeatCount: 1, repeatEnd: false }).status, 'pending');
   assert.equal(ledger.ingest({ ...base, msgId: 'm2', repeatCount: 2, repeatEnd: false }).status, 'pending');
   const final = ledger.ingest({ ...base, msgId: 'm3', repeatCount: 2, repeatEnd: true });
-  assert.equal(final.status, 'ready');
-  assert.equal(final.event.repeatCount, 2);
+  assert.equal(final.status, 'ready'); assert.equal(final.event.repeatCount, 2);
   assert.equal(ledger.ingest({ ...base, msgId: 'm4', repeatCount: 2, repeatEnd: true }).status, 'duplicate');
 });
 

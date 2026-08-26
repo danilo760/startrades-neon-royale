@@ -2,12 +2,13 @@ const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/g;
 const MAX_REPEAT = 100;
 
 export const GIFT_CATALOG = Object.freeze([
-  Object.freeze({ giftId: '5655', aliases: ['rose', 'rosa'], tier: 'support', effect: 'heal', magnitude: 20, durationMs: 5000, cooldownMs: 1500, visualEffect: 'heart-rise', narrationPriority: 1 }),
-  Object.freeze({ giftId: 'neon-speed', aliases: ['gg', 'perfume', 'coffee', 'café'], tier: 'boost', effect: 'speed', magnitude: 1.5, durationMs: 5000, cooldownMs: 5000, visualEffect: 'speed-trail', narrationPriority: 2 }),
-  Object.freeze({ giftId: 'neon-extra-shot', aliases: ['rocket', 'foguete', 'finger gun', 'dedo em pistola'], tier: 'boost', effect: 'extra-projectile', magnitude: 1, durationMs: 0, cooldownMs: 7000, visualEffect: 'neon-projectile', narrationPriority: 2 }),
-  Object.freeze({ giftId: 'neon-meteor', aliases: ['meteor', 'meteoro', 'lion', 'leão'], tier: 'event', effect: 'meteor', magnitude: 24, durationMs: 1800, cooldownMs: 12000, visualEffect: 'meteor-warning', narrationPriority: 3 }),
-  Object.freeze({ giftId: 'neon-ward', aliases: ['castle', 'castelo'], tier: 'premium', effect: 'premium-shield', magnitude: 15, durationMs: 3000, cooldownMs: 15000, visualEffect: 'golden-burst', narrationPriority: 4 }),
-  Object.freeze({ giftId: 'neon-colossus', aliases: ['universe', 'universo', 'galaxy', 'galáxia'], tier: 'premium', effect: 'colossus', magnitude: 1, durationMs: 45000, cooldownMs: 60000, visualEffect: 'colossus-neon', narrationPriority: 5 }),
+  Object.freeze({ giftId: '5655', aliases: ['rose', 'rosa'], tier: 'support', effect: 'entry-boost', magnitude: 1.2, durationMs: 5000, cooldownMs: 5000, visualEffect: 'entry-spark', narrationPriority: 1 }),
+  Object.freeze({ giftId: 'neon-shield', aliases: ['hat', 'chapéu', 'chapeu', 'glasses', 'óculos', 'oculos', 'castle', 'castelo'], tier: 'boost', effect: 'tactical-shield', magnitude: 10, durationMs: 3000, cooldownMs: 12000, visualEffect: 'shield-ring', narrationPriority: 2 }),
+  Object.freeze({ giftId: 'neon-speed', aliases: ['gg', 'perfume', 'coffee', 'café'], tier: 'boost', effect: 'speed', magnitude: 1.35, durationMs: 5000, cooldownMs: 7000, visualEffect: 'speed-trail', narrationPriority: 2 }),
+  Object.freeze({ giftId: 'neon-extra-shot', aliases: ['finger gun', 'dedo em pistola'], tier: 'boost', effect: 'extra-projectile', magnitude: 1, durationMs: 0, cooldownMs: 7000, visualEffect: 'neon-projectile', narrationPriority: 2 }),
+  Object.freeze({ giftId: 'neon-meteor', aliases: ['meteor', 'meteoro', 'rocket', 'foguete', 'car', 'carro'], tier: 'event', effect: 'meteor', magnitude: 22, durationMs: 2000, cooldownMs: 12000, visualEffect: 'meteor-warning', narrationPriority: 3 }),
+  Object.freeze({ giftId: 'neon-star-power', aliases: ['lion', 'leão', 'leao'], tier: 'premium', effect: 'star-power', magnitude: 100, durationMs: 60000, cooldownMs: 30000, visualEffect: 'golden-aura', narrationPriority: 5 }),
+  Object.freeze({ giftId: 'neon-colossus', aliases: ['universe', 'universo', 'galaxy', 'galáxia', 'galaxia'], tier: 'premium', effect: 'colossus', magnitude: 1, durationMs: 45000, cooldownMs: 60000, visualEffect: 'colossus-neon', narrationPriority: 5 }),
 ]);
 
 const byId = new Map(GIFT_CATALOG.map((gift) => [String(gift.giftId), gift]));
