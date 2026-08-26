@@ -3,6 +3,7 @@ import express from 'express';
 import { WebSocketServer } from 'ws';
 import { TikTokLive } from 'tiktok-live-api';
 import { addBots, applyCombatResult, applyComment, applyGift, applyStormDamage, finish, likes, pause, positions, reset, setStorm, start, state, tickStorm, updateSettings } from './engine.js';
+import { initializeLeaderboard } from './leaderboard.js';
 
 const cfg = { username: process.env.TIKTOK_USERNAME || 'startrades01', apiKey: process.env.TIKTOOL_API_KEY || '', ollama: process.env.OLLAMA_URL || 'http://127.0.0.1:11434', model: process.env.OLLAMA_MODEL || 'llama3.2:3b', mock: process.env.MOCK_MODE !== 'false', port: Number(process.env.PORT || 4173), cooldown: Number(process.env.AGENT_COOLDOWN_MS || 4500) };
 const app = express(); app.use(express.json({ limit: '200kb' })); app.use(express.static('dist'));
@@ -10,6 +11,7 @@ const server = app.listen(cfg.port, () => console.log(`StarTrades LIVE http://12
 const wss = new WebSocketServer({ server, path: '/events' });
 const emit = (type, payload = {}) => { const data = JSON.stringify({ type, payload, state }); wss.clients.forEach((c) => c.readyState === 1 && c.send(data)); };
 wss.on('connection', (s) => s.send(JSON.stringify({ type: 'state', state })));
+void initializeLeaderboard();
 
 let lastSpeech = 0;
 const styleDirection = () => ({
@@ -17,6 +19,7 @@ const styleDirection = () => ({
   esports: 'Fale como caster profissional de e-sports, claro, rápido e empolgante.',
   explosive: 'Fale como apresentador de arena, com energia máxima, impacto e emoção.',
 }[state.settings.narratorStyle] || 'Fale como apresentador de arena com muita energia.');
+const sanitizeNarration = (value) => String(value || '').replace(/["'*#`\r\n]/g, ' ').replace(/^(narrador|nova|resposta)\s*:\s*/i, '').replace(/[^\p{L}\p{N}@!?.,À-ÿ\s-]/gu, '').trim().split(/\s+/).slice(0, 16).join(' ').slice(0, 180);
 
 async function agent(context, { force = false, emotion = 'hype' } = {}) {
   if (!state.settings.agentEnabled || (!force && Date.now() - lastSpeech < cfg.cooldown)) return;
@@ -25,25 +28,25 @@ async function agent(context, { force = false, emotion = 'hype' } = {}) {
     const prompt = `Você é NOVA, o narrador ÉPICO e HIPER-EMPOLGADO de eSports em uma arena neon. ${styleDirection()} Emoção atual: ${emotion}. Narre como final de campeonato: use EXCLAMAÇÕES, MAIÚSCULAS para impacto e gírias de games como INSANO, GG e CLUTCH. Responda em português brasileiro com no máximo 16 palavras. Não use emojis, não prometa prêmios, não peça dinheiro ou diamantes, não repita insultos nem dados pessoais. Evento: ${context}`;
     const r = await fetch(`${cfg.ollama}/api/generate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: cfg.model, stream: false, prompt }) });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const data = await r.json(); const text = String(data.response || '').replace(/[*#]/g, '').trim().split(/\s+/).slice(0, 16).join(' ').slice(0, 180);
+    const data = await r.json(); const text = sanitizeNarration(data.response);
     if (text) emit('agent', { text, emotion, priority: force });
   } catch (e) {
     console.error('Ollama:', e.message);
-    const fallback = String(context).replace(/[\r\n]+/g, ' ').trim().slice(0, 140);
-    if (fallback) emit('agent', { text: `Atenção, arena! ${fallback}`, emotion, priority: force });
+    const fallback = sanitizeNarration(`Atenção, arena! ${context}`);
+    if (fallback) emit('agent', { text: fallback, emotion, priority: force });
   }
 }
 
 function chat(e) {
-  const username = e.user?.uniqueId || e.username || 'fighter'; const comment = e.comment || ''; const result = applyComment({ username, comment });
+  const username = e.user?.uniqueId || e.username || 'fighter', platformUserId = e.user?.userId || username, avatarUrl = e.user?.profilePictureUrl || ''; const comment = e.comment || ''; const result = applyComment({ username, platformUserId, avatarUrl, comment });
   emit('comment', { username, comment, result });
   if (result.kind === 'join') agent(`${result.player.id} acaba de aterrissar. Receba o novo combatente!`, { emotion: 'welcome' });
   else if (/^(oi|olá|ola|como joga|!ajuda)$/i.test(comment.trim())) agent(`Explique: digite entrar com exclamação para participar; presentes ativam poderes.`, { emotion: 'friendly' });
 }
 function gift(e) {
   if (e.repeatEnd === false) return;
-  const username = e.user?.uniqueId || e.username || 'fighter';
-  const result = applyGift({ username, giftName: e.giftName, diamondCount: e.diamondCount, repeatCount: e.repeatCount });
+  const username = e.user?.uniqueId || e.username || 'fighter', platformUserId = e.user?.userId || username, avatarUrl = e.user?.profilePictureUrl || '';
+  const result = applyGift({ username, platformUserId, avatarUrl, giftName: e.giftName, diamondCount: e.diamondCount, repeatCount: e.repeatCount });
   if (!result.ignored) { emit('power', result); agent(`${result.playerId} liberou ${result.power.label}! A arena sentiu o impacto!`, { emotion: result.power.kind === 'meteor' ? 'legendary' : 'power' }); }
 }
 

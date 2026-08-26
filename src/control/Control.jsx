@@ -12,7 +12,7 @@ export function Control() {
   const [names, setNames] = useState('Nebula\nCyberFox\nLimeGuard\nBlaze\nNovaX\nSpectra');
   const [gift, setGift] = useState({ username: 'Nebula', giftName: 'Rosa', diamondCount: 1, repeatCount: 1 });
   const [newGift, setNewGift] = useState({ name: '', kind: 'shot', sound: '' });
-  const [connected, setConnected] = useState(false), [notice, setNotice] = useState('Pronto para comandar a arena');
+  const [connected, setConnected] = useState(false), [notice, setNotice] = useState('Pronto para comandar a arena'), [mapPending, setMapPending] = useState(false);
   useEffect(() => {
     let ws, retry, active = true;
     const connect = () => {
@@ -38,6 +38,7 @@ export function Control() {
   };
   const simulateMapping = (name) => run('/api/mock/gift', { username: gift.username || 'Nebula', giftName: name, diamondCount: 1, repeatCount: 1 }, `${name} simulado`);
   const removeMapping = (name) => run('/api/settings', { removeGift: name }, `Mapeamento ${name} removido`);
+  const changeMap = async (arenaBackground) => { setMapPending(true); try { await run('/api/settings', { arenaBackground }, `Mapa ${arenaBackground} ativado`); } finally { setMapPending(false); } };
   const alive = s.players.filter((p) => p.alive), catalog = s.powerCatalog || [];
   const selectedPower = useMemo(() => catalog.find((p) => gift.diamondCount * gift.repeatCount >= p.min && (p.max === null || gift.diamondCount * gift.repeatCount <= p.max)), [catalog, gift]);
 
@@ -57,7 +58,7 @@ export function Control() {
     <section className="commandGrid">
       <article className="commandCard battleCard"><div className="cardTitle"><span>01</span><div><h2>Controle da batalha</h2><p>Comandos principais da rodada</p></div></div>
         <div className="battleButtons"><button className="primary" onClick={() => run('/api/battle/start', {}, 'Batalha iniciada')}>▶ INICIAR</button><button onClick={() => run('/api/battle/pause', {}, 'Estado da pausa alterado')}>Ⅱ PAUSAR / RETOMAR</button><button className="danger" onClick={() => run('/api/battle/end', {}, 'Batalha encerrada e campeão anunciado')}>■ ENCERRAR</button><button className="ghost" onClick={() => confirm('Zerar jogadores e iniciar uma nova rodada?') && run('/api/battle/reset', {}, 'Nova rodada preparada')}>↻ ZERAR RODADA</button></div>
-        <div className="battleMode"><label className="toggle"><span><b>Modo de Times</b><em>Azul vs Vermelho • fogo amigo bloqueado</em></span><input type="checkbox" checked={s.settings.teamMode ?? false} onChange={(e) => run('/api/settings', { teamMode: e.target.checked }, e.target.checked ? 'Modo de Times ativado' : 'Modo individual ativado')}/></label><div className="bountyStatus"><span>ALVO BOUNTY</span><b>{s.bountyTargetId ? `👑 @${s.bountyTargetId}` : 'SEM ALVO NESTA RODADA'}</b></div></div>
+        <div className="battleMode"><label className="toggle"><span><b>Modo de Times</b><em>Azul vs Vermelho • fogo amigo bloqueado</em></span><input type="checkbox" checked={s.settings.teamMode ?? false} onChange={(e) => run('/api/settings', { teamMode: e.target.checked }, e.target.checked ? 'Modo de Times ativado' : 'Modo individual ativado')}/></label><label className="mapSelector"><span>MAPA DA ARENA</span><select value={s.settings.arenaBackground || 'default'} disabled={mapPending} onChange={(e) => changeMap(e.target.value)}><option value="default">Neon padrão</option><option value="cyberpunk">Cyberpunk</option><option value="space">Espaço</option><option value="retro">Retrô</option></select></label><div className="bountyStatus"><span>ALVO BOUNTY</span><b>{s.bountyTargetId ? `👑 @${s.bountyTargetId}` : 'SEM ALVO NESTA RODADA'}</b></div></div>
       </article>
       <article className="commandCard"><div className="cardTitle"><span>02</span><div><h2>Jogadores de teste</h2><p>Um nome por linha</p></div></div><textarea value={names} onChange={(e) => setNames(e.target.value)} rows="6"/><button className="primary full" onClick={() => run('/api/test/players', { names: names.split(/\n|,/).map((x) => x.trim()).filter(Boolean) }, 'Jogadores adicionados à arena')}>+ ADICIONAR COMBATENTES</button></article>
       <article className="commandCard"><div className="cardTitle"><span>03</span><div><h2>Tempestade</h2><p>Controle manual da zona</p></div></div><div className="stormValue">{s.storm || 0}<small>%</small></div><input className="stormRange" type="range" min="0" max="100" value={s.storm || 0} onChange={(e) => run('/api/storm', { value: Number(e.target.value) }, `Tempestade ajustada para ${e.target.value}%`)}/><div className="rangeLabels"><span>SEGURA</span><span>CRÍTICA</span></div></article>

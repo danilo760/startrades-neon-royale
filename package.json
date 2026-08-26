@@ -11,6 +11,7 @@
     "check": "node --check server/index.js && node --check server/engine.js && node --check server/leaderboard.js && npm test && vite build"
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.57.4",
     "@vitejs/plugin-react": "^5.0.2",
     "concurrently": "^9.2.1",
     "dotenv": "^16.6.1",

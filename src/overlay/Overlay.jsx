@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Phaser from 'phaser';
 import { GameScene } from '../game/GameScene.js';
-import { setMusic, setSound, speak, unlockAudio } from '../audio.js';
+import { cleanupSpeech, prepareSpeech, setMusic, setSound, speak, unlockAudio } from '../audio.js';
 
 const wsUrl = () => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/events`;
 
@@ -11,6 +11,7 @@ export function Overlay() {
   const [speech, setSpeech] = useState('Ative o áudio para ouvir o apresentador da arena.');
   const [emotion, setEmotion] = useState('hype'), [audio, setAudio] = useState(false), [connected, setConnected] = useState(false), [activePower, setActivePower] = useState(null);
   useEffect(() => {
+    prepareSpeech();
     const post = (url, body) => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     const bridge = { unlock: () => {}, combat: (x) => post('/api/game/combat', x), stormDamage: (targetId, damage) => post('/api/game/storm-damage', { targetId, damage }), positions: (players) => post('/api/game/positions', { players }) };
     const scene = new GameScene(bridge); sceneRef.current = scene;
@@ -34,7 +35,7 @@ export function Overlay() {
         }
       };
     };
-    connect(); return () => { mounted = false; clearTimeout(retry); clearTimeout(powerTimer.current); socket?.close(); game.destroy(true); };
+    connect(); return () => { mounted = false; clearTimeout(retry); clearTimeout(powerTimer.current); socket?.close(); cleanupSpeech(); game.destroy(true); };
   }, []);
   const enable = () => {
     unlockAudio(); setAudio(true); setMusic(state.settings?.music !== false); setSound(state.settings?.sound !== false);

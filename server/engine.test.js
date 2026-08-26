@@ -36,3 +36,10 @@ test('bounty concede pontos triplos e retorna flag para o narrador', () => {
   assert.equal(result.pointsAwarded, 30);
   assert.equal(state.bountyTargetId, null);
 });
+
+test('mapa inválido volta ao default', () => {
+  prepare(); updateSettings({ arenaBackground: 'javascript:alert(1)' });
+  assert.equal(state.settings.arenaBackground, 'default');
+  updateSettings({ arenaBackground: 'space' });
+  assert.equal(state.settings.arenaBackground, 'space');
+});

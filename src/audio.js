@@ -56,23 +56,31 @@ export function setMusic(on) {
   }, 390);
 }
 
-const emotionProfiles = {
-  calm: { rate: .91, pitch: -.04 }, friendly: { rate: .98, pitch: .03 }, welcome: { rate: 1.01, pitch: .02 },
-  hype: { rate: 1.06, pitch: .01 }, battle: { rate: 1.11, pitch: -.02 }, power: { rate: 1.08, pitch: .03 },
-  elimination: { rate: 1.04, pitch: -.06 }, urgent: { rate: 1.14, pitch: .06 }, triumph: { rate: 1.03, pitch: .08 },
-  legendary: { rate: .94, pitch: -.08 }, victory: { rate: .96, pitch: .08 },
-};
+let speechQueue = [], speaking = false, cachedVoices = [], voicesListener = null, lastSpeechText = '';
+const criticalEmotions = new Set(['victory', 'legendary', 'urgent', 'battle']);
+const loadVoices = () => { if ('speechSynthesis' in window) cachedVoices = window.speechSynthesis.getVoices(); };
+export function prepareSpeech() { if (!('speechSynthesis' in window) || voicesListener) return; loadVoices(); voicesListener = loadVoices; window.speechSynthesis.addEventListener('voiceschanged', voicesListener); }
+function playNext() {
+  if (speaking || !speechQueue.length || !('speechSynthesis' in window)) return;
+  const { text, mode } = speechQueue.shift(), u = new SpeechSynthesisUtterance(text); speaking = true;
+  u.lang = 'pt-BR'; u.volume = 1; u.rate = 1.25; u.pitch = mode === 'female' ? 1.3 : 1.1;
+  const portuguese = cachedVoices.filter((v) => v.lang.toLowerCase().startsWith('pt'));
+  const brazilian = portuguese.filter((v) => v.lang.toLowerCase() === 'pt-br');
+  const hint = mode === 'female' ? /female|femin|francisca|maria|luciana|helena/i : /male|mascul|antonio|antônio|daniel|felipe|ricardo/i;
+  u.voice = brazilian.find((v) => hint.test(v.name)) || brazilian[0] || portuguese[0] || cachedVoices[0] || null;
+  u.onend = u.onerror = () => { speaking = false; playNext(); };
+  window.speechSynthesis.speak(u);
+}
 
 export function speak(text, options = {}) {
   if (typeof options === 'string') options = { mode: options };
   if (!enabled || !('speechSynthesis' in window) || !text) return;
-  const { mode = 'male', emotion = 'hype', intensity = 3, style = 'explosive', priority = false } = options;
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = 'pt-BR'; u.volume = 1; u.rate = 1.25; // ritmo de transmissão solicitado
-  u.pitch = mode === 'female' ? 1.3 : 1.1; // voz masculina padrão em 1.1, feminina com timbre mais alto
-  const voices = window.speechSynthesis.getVoices().filter((v) => v.lang.toLowerCase().startsWith('pt'));
-  const hint = mode === 'female' ? /female|femin|francisca|maria|luciana|helena/i : /male|mascul|antonio|antônio|daniel|felipe|ricardo/i;
-  u.voice = voices.find((v) => hint.test(v.name)) || voices[mode === 'female' ? 0 : Math.max(0, voices.length - 1)] || null;
-  if (priority || ['victory', 'legendary', 'urgent'].includes(emotion)) window.speechSynthesis.cancel();
-  window.speechSynthesis.speak(u);
+  const { mode = 'male', emotion = 'hype', priority = false } = options, normalized = String(text).trim();
+  if (!normalized || normalized === lastSpeechText || speechQueue.some((item) => item.text === normalized)) return;
+  prepareSpeech(); lastSpeechText = normalized;
+  if (priority || criticalEmotions.has(emotion)) { window.speechSynthesis.cancel(); speechQueue = []; speaking = false; speechQueue.unshift({ text: normalized, mode }); }
+  else { speechQueue.push({ text: normalized, mode }); const waitingLimit = speaking ? 2 : 3; while (speechQueue.length > waitingLimit) speechQueue.shift(); }
+  playNext();
 }
+
+export function cleanupSpeech() { speechQueue = []; speaking = false; lastSpeechText = ''; if ('speechSynthesis' in window) { window.speechSynthesis.cancel(); if (voicesListener) window.speechSynthesis.removeEventListener('voiceschanged', voicesListener); } voicesListener = null; cachedVoices = []; }

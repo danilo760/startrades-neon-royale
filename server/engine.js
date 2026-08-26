@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { getLeaderboardTop, recordRound } from './leaderboard.js';
 
 const players = new Map();
@@ -14,6 +15,7 @@ export const POWER_PRESETS = Object.fromEntries([
   ['meteor', { label: 'METEORO LENDÁRIO', damage: 55, radius: 250, color: 0xffa12b, sound: 'explosion' }],
 ]);
 const DEFAULT_GIFT_MAPPING = { rosa: { kind: 'shot' }, 'dedo em pistola': { kind: 'shot' }, gg: { kind: 'shield' }, boneca: { kind: 'supply' }, foguete: { kind: 'grenade' }, leão: { kind: 'airstrike' }, drone: { kind: 'drone' }, universo: { kind: 'meteor' } };
+export const ARENA_BACKGROUNDS = ['default', 'cyberpunk', 'space', 'retro'];
 
 export const POWER_CATALOG = [
   { id: 'blast', min: 1, max: 4, sample: 1, giftExample: 'Rosa', kind: 'shot', icon: '✦', label: 'RAJADA ESTELAR', summary: 'Disparo de energia no adversário mais próximo', damage: 12, color: 0x75ff5b },
@@ -27,9 +29,9 @@ export const POWER_CATALOG = [
 
 export const state = {
   phase: 'lobby', round: 1, storm: 0, likes: 0, players: [], feed: [], winner: null,
-  bountyTargetId: null, bountyClaimedBy: null, teamScores: { blue: { score: 0, survivors: 0, eliminations: 0 }, red: { score: 0, survivors: 0, eliminations: 0 } },
+  bountyTargetId: null, bountyTargetPlatformId: null, bountyClaimedBy: null, roundId: randomUUID(), teamScores: { blue: { score: 0, survivors: 0, eliminations: 0 }, red: { score: 0, survivors: 0, eliminations: 0 } },
   powerCatalog: POWER_CATALOG,
-  settings: { agentEnabled: true, teamMode: false, voiceMode: 'male', voiceIntensity: 3, narratorStyle: 'explosive', music: true, sound: true, giftMapping: { ...DEFAULT_GIFT_MAPPING } },
+  settings: { agentEnabled: true, teamMode: false, arenaBackground: 'default', voiceMode: 'male', voiceIntensity: 3, narratorStyle: 'explosive', music: true, sound: true, giftMapping: { ...DEFAULT_GIFT_MAPPING } },
 };
 
 let roundRecorded = false;
@@ -47,20 +49,23 @@ const spawnPoint = () => ({ x: 130 + Math.random() * 1020, y: 115 + Math.random(
 const normalizeTeam = (choice) => ['azul', 'blue'].includes(String(choice || '').toLowerCase()) ? 'blue' : ['vermelho', 'red'].includes(String(choice || '').toLowerCase()) ? 'red' : null;
 const balancedTeam = () => teamStats('blue').survivors <= teamStats('red').survivors ? 'blue' : 'red';
 
-export function join(username, teamChoice = null, bot = false) {
+export function join(username, teamChoice = null, bot = false, identity = {}) {
   const id = clean(username);
   if (!players.has(id)) {
     const pos = spawnPoint();
-    players.set(id, { id, ...pos, targetX: pos.x, targetY: pos.y, hp: 100, shield: 0, energy: 0, score: 0, eliminations: 0, alive: true, skin: players.size % 4, team: normalizeTeam(teamChoice) || balancedTeam(), bot });
+    players.set(id, { id, username: id, platformUserId: String(identity.platformUserId || id).slice(0, 64), avatarUrl: /^https:\/\//i.test(identity.avatarUrl || '') ? String(identity.avatarUrl).slice(0, 500) : '', ...pos, targetX: pos.x, targetY: pos.y, hp: 100, shield: 0, energy: 0, score: 0, eliminations: 0, alive: true, skin: players.size % 4, team: normalizeTeam(teamChoice) || balancedTeam(), bot });
     feed(`@${id} aterrissou na arena`, 'join');
   }
+  const player = players.get(id);
+  if (identity.avatarUrl && /^https:\/\//i.test(identity.avatarUrl)) player.avatarUrl = String(identity.avatarUrl).slice(0, 500);
+  if (state.bountyTargetPlatformId && player.platformUserId === state.bountyTargetPlatformId) state.bountyTargetId = player.id;
   sync(); return players.get(id);
 }
 
 export function addBots(names = []) { names.slice(0, 30).forEach((n) => join(n, null, true)); return state; }
 export function start() {
   const leader = getLeaderboardTop();
-  state.phase = 'running'; state.winner = null; state.bountyTargetId = leader?.id || null; state.bountyClaimedBy = null; roundRecorded = false;
+  state.phase = 'running'; state.winner = null; state.roundId = randomUUID(); state.bountyTargetPlatformId = leader?.platformUserId || leader?.id || null; state.bountyTargetId = [...players.values()].find((p) => p.platformUserId === state.bountyTargetPlatformId)?.id || null; state.bountyClaimedBy = null; roundRecorded = false;
   feed(`RODADA ${state.round} INICIADA`, 'system');
   if (state.bountyTargetId) feed(`CAÇADA ATIVA: @${state.bountyTargetId} vale pontuação tripla`, 'bounty');
   sync(); return state;
@@ -70,6 +75,7 @@ export function setStorm(value) { state.storm = clamp(Number(value) || 0, 0, 100
 export function updateSettings(next = {}) {
   const { giftMapping, removeGift, ...rest } = next;
   Object.assign(state.settings, Object.fromEntries(Object.entries(rest).filter(([k]) => k in state.settings)));
+  state.settings.arenaBackground = ARENA_BACKGROUNDS.includes(state.settings.arenaBackground) ? state.settings.arenaBackground : 'default';
   if (giftMapping && typeof giftMapping === 'object') for (const [rawName, cfg] of Object.entries(giftMapping)) {
     const key = String(rawName).trim().toLowerCase();
     if (key && cfg && POWER_PRESETS[cfg.kind]) state.settings.giftMapping[key] = { kind: cfg.kind, ...(cfg.sound ? { sound: cfg.sound } : {}) };
@@ -87,8 +93,8 @@ export function giftPower(diamonds = 1, name = '', mapping = state.settings.gift
   return { ...tier, ...preset, kind, ...(mapped?.sound ? { sound: mapped.sound } : {}) };
 }
 
-export function applyGift({ username, giftName = 'Presente', diamondCount = 1, repeatCount = 1 }) {
-  const player = join(username);
+export function applyGift({ username, platformUserId, avatarUrl, giftName = 'Presente', diamondCount = 1, repeatCount = 1 }) {
+  const player = join(username, null, false, { platformUserId, avatarUrl });
   if (state.phase !== 'running' || !player.alive) return { ignored: true };
   const total = Math.max(1, Number(diamondCount) * Math.max(1, Number(repeatCount)));
   const power = giftPower(total, giftName, state.settings.giftMapping);
@@ -99,10 +105,10 @@ export function applyGift({ username, giftName = 'Presente', diamondCount = 1, r
   return { playerId: player.id, power, total, giftName };
 }
 
-export function applyComment({ username, comment = '' }) {
+export function applyComment({ username, platformUserId, avatarUrl, comment = '' }) {
   const cmd = String(comment).trim().toLowerCase();
   const joinCommand = cmd.match(/^!(?:entrar|join)(?:\s+(azul|blue|vermelho|red))?$/);
-  if (joinCommand) return { kind: 'join', player: join(username, joinCommand[1] || null) };
+  if (joinCommand) return { kind: 'join', player: join(username, joinCommand[1] || null, false, { platformUserId, avatarUrl }) };
   const p = players.get(clean(username));
   if (!p || !p.alive || state.phase !== 'running') return { kind: 'chat' };
   if (cmd === '!esquerda') p.targetX = clamp(p.x - 180, 70, 1210);
@@ -124,7 +130,7 @@ export function applyCombatResult({ attackerId, targetId, damage, targetHp, targ
   if (eliminated) {
     target.alive = false; attacker.eliminations++;
     feed(`@${attacker.id} eliminou @${target.id}`, 'elimination');
-    if (bountyClaimed) { state.bountyClaimedBy = attacker.id; state.bountyTargetId = null; feed(`@${attacker.id} conquistou a CAÇADA TRIPLA`, 'bounty'); }
+    if (bountyClaimed) { state.bountyClaimedBy = attacker.id; state.bountyTargetId = null; state.bountyTargetPlatformId = null; feed(`@${attacker.id} conquistou a CAÇADA TRIPLA`, 'bounty'); }
   }
   sync();
   return { applied: true, eliminated: Boolean(eliminated), bountyClaimed, attackerId: attacker.id, targetId: target.id, pointsAwarded: basePoints * (bountyClaimed ? 3 : 1) };
@@ -156,9 +162,9 @@ export function finish() {
     state.winner = null; feed('Rodada sem vencedor', 'winner');
   }
   if (!roundRecorded) {
-    recordRound([...players.values()].map((p) => ({ ...p, roundWinner: state.winner?.type === 'player' ? state.winner.id === p.id : state.winner?.team === p.team })));
+    recordRound([...players.values()].map((p) => ({ ...p, roundWinner: state.winner?.type === 'player' ? state.winner.id === p.id : state.winner?.team === p.team })), state.roundId);
     roundRecorded = true;
   }
   return state.winner;
 }
-export function reset() { players.clear(); roundRecorded = false; Object.assign(state, { phase: 'lobby', round: state.round + 1, storm: 0, likes: 0, players: [], feed: [], winner: null, bountyTargetId: null, bountyClaimedBy: null, teamScores: { blue: { score: 0, survivors: 0, eliminations: 0 }, red: { score: 0, survivors: 0, eliminations: 0 } } }); return state; }
+export function reset() { players.clear(); roundRecorded = false; Object.assign(state, { phase: 'lobby', round: state.round + 1, roundId: randomUUID(), storm: 0, likes: 0, players: [], feed: [], winner: null, bountyTargetId: null, bountyTargetPlatformId: null, bountyClaimedBy: null, teamScores: { blue: { score: 0, survivors: 0, eliminations: 0 }, red: { score: 0, survivors: 0, eliminations: 0 } } }); return state; }

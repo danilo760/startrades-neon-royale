@@ -30,6 +30,7 @@ export class GameScene extends Phaser.Scene {
   drawArena() {
     const bg = this.add.graphics().setDepth(-20);
     bg.fillGradientStyle(0x16072b, 0x090418, 0x05020b, 0x0d0520, 1).fillRect(0, 0, 1280, 720);
+    this.arenaTint = this.add.rectangle(640, 360, 1280, 720, 0x2c0f50, .08).setDepth(-19);
     for (let i = 0; i < 75; i++) {
       const star = this.add.circle(Phaser.Math.Between(20, 1260), Phaser.Math.Between(15, 705), Phaser.Math.Between(1, 2), i % 4 ? 0x7257a8 : 0x2cefff, Phaser.Math.FloatBetween(.18, .55)).setDepth(-18);
       this.tweens.add({ targets: star, alpha: Phaser.Math.FloatBetween(.08, .55), duration: Phaser.Math.Between(900, 2600), yoyo: true, repeat: -1 });
@@ -53,7 +54,8 @@ export class GameScene extends Phaser.Scene {
     this.state = state;
     (state.players || []).forEach((p) => this.ensureFighter(p));
     const activeIds = new Set((state.players || []).map((p) => p.id));
-    for (const [id, f] of this.fighters) if (!activeIds.has(id)) { f.container.destroy(); this.fighters.delete(id); }
+    for (const [id, f] of this.fighters) if (!activeIds.has(id)) { this.destroyFighter(id, f); }
+    this.applyArenaTheme(state.settings?.arenaBackground);
     this.drawStorm(state.storm || 0);
   }
   ensureFighter(p) {
@@ -63,11 +65,12 @@ export class GameScene extends Phaser.Scene {
       const glow = this.add.circle(0, 9, 31, [0x2cefff, 0xff36d7, 0x75ff4d, 0xff8a2b][p.skin], .13).setStrokeStyle(1, [0x2cefff, 0xff36d7, 0x75ff4d, 0xff8a2b][p.skin], .45);
       const teamAura = this.add.circle(0, 8, 37, 0x35eaff, .08).setStrokeStyle(3, 0x35eaff, .9).setVisible(false);
       const sprite = this.add.sprite(0, 0, 'fighters', p.skin * 4).setScale(.25).setOrigin(.5, .72);
+      const avatarBase = this.add.circle(0, -4, 22, 0x2cefff, 1).setStrokeStyle(3, 0xffffff, .65);
       const crown = this.add.text(0, -78, '👑', { fontSize: '25px' }).setOrigin(.5).setVisible(false);
       const name = this.add.text(0, -52, `@${p.id}`, { fontFamily: 'Arial', fontSize: '13px', fontStyle: 'bold', color: '#ffffff', stroke: '#05030c', strokeThickness: 5 }).setOrigin(.5);
       const hpBg = this.add.rectangle(0, -34, 68, 8, 0x160f24).setStrokeStyle(1, 0xffffff, .12); const hp = this.add.rectangle(-34, -34, 68, 6, 0x75ff4d).setOrigin(0, .5); const shield = this.add.rectangle(-34, -25, 0, 4, 0x2cefff).setOrigin(0, .5);
-      const container = this.add.container(p.x, p.y, [shadow, glow, teamAura, sprite, crown, name, hpBg, hp, shield]).setDepth(p.y).setScale(.15).setAlpha(0);
-      f = { container, sprite, glow, teamAura, crown, hp, shield, data: p, nextShot: 0, wanderAt: 0, wasAlive: true }; this.fighters.set(p.id, f);
+      const container = this.add.container(p.x, p.y, [shadow, glow, teamAura, sprite, avatarBase, crown, name, hpBg, hp, shield]).setDepth(p.y).setScale(.15).setAlpha(0);
+      f = { container, sprite, avatarBase, glow, teamAura, crown, hp, shield, data: p, nextShot: 0, wanderAt: 0, wasAlive: true }; this.fighters.set(p.id, f);
       this.tweens.add({ targets: crown, y: -85, duration: 700, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
       this.tweens.add({ targets: container, scale: 1, alpha: 1, duration: 520, ease: 'Back.easeOut' }); this.radialBurst(p.x, p.y, [0x2cefff, 0xff36d7, 0x75ff4d, 0xff8a2b][p.skin], 12, 55); sfx('join');
     }
@@ -75,8 +78,36 @@ export class GameScene extends Phaser.Scene {
     const teamColor = p.team === 'red' ? 0xff334e : 0x35eaff;
     f.data = p; f.wasAlive = p.alive; f.hp.width = 68 * p.hp / 100; f.shield.width = 68 * p.shield / 100;
     f.teamAura.setFillStyle(teamColor, .08).setStrokeStyle(3, teamColor, .9).setVisible(Boolean(this.state?.settings?.teamMode && p.alive));
+    f.avatarBase.setFillStyle(this.state?.settings?.teamMode ? teamColor : 0x2cefff, 1);
     f.crown.setVisible(Boolean(p.alive && this.state?.bountyTargetId === p.id));
+    if (p.avatarUrl && f.avatarLoadedUrl !== p.avatarUrl && f.avatarLoadingUrl !== p.avatarUrl) this.loadAvatar(f, p);
     if (p.alive) f.container.setAlpha(1); return f;
+  }
+  applyArenaTheme(name = 'default') {
+    const allowed = ['default', 'cyberpunk', 'space', 'retro'], next = allowed.includes(name) ? name : 'default';
+    if (this.currentArena === next) return; this.currentArena = next;
+    const palettes = { default: [0x2c0f50, .08], cyberpunk: [0xff1493, .12], space: [0x173b8f, .13], retro: [0xff7a18, .1] };
+    this.arenaTint?.setFillStyle(...palettes[next]);
+  }
+  loadAvatar(f, p) {
+    const hash = [...`${p.platformUserId || p.id}:${p.avatarUrl}`].reduce((n, c) => ((n * 31 + c.charCodeAt(0)) >>> 0), 7).toString(36), key = `avatar-${hash}`;
+    f.avatarLoadingUrl = p.avatarUrl; let finished = false;
+    const cleanup = () => { this.load.off(`filecomplete-image-${key}`, success); this.load.off('loaderror', failure); clearTimeout(timer); };
+    const failure = (file) => { if (file?.key && file.key !== key) return; if (finished) return; finished = true; cleanup(); f.avatarLoadingUrl = null; if (this.textures.exists(key)) this.textures.remove(key); };
+    const success = () => {
+      if (finished) return; finished = true; cleanup();
+      if (!this.fighters.has(p.id) || !this.textures.exists(key) || this.textures.get(key).key === '__MISSING') { f.avatarLoadingUrl = null; if (this.textures.exists(key)) this.textures.remove(key); return; }
+      f.avatar?.destroy(); f.avatarMaskGraphic?.destroy();
+      const image = this.add.image(0, -4, key).setDisplaySize(42, 42), maskGraphic = this.make.graphics({ add: false }); maskGraphic.fillStyle(0xffffff).fillCircle(0, -4, 21).setVisible(false);
+      f.container.add([image, maskGraphic]); image.setMask(maskGraphic.createGeometryMask()); f.avatar = image; f.avatarMaskGraphic = maskGraphic; f.avatarTextureKey = key; f.avatarLoadedUrl = p.avatarUrl; f.avatarLoadingUrl = null;
+    };
+    const timer = setTimeout(() => failure(), 5000);
+    this.load.once(`filecomplete-image-${key}`, success); this.load.on('loaderror', failure); this.load.image(key, p.avatarUrl); if (!this.load.isLoading()) this.load.start();
+  }
+  destroyFighter(id, f) {
+    f.avatar?.clearMask(true); f.avatarMaskGraphic?.destroy(); f.container.destroy();
+    if (f.avatarTextureKey && this.textures.exists(f.avatarTextureKey)) this.textures.remove(f.avatarTextureKey);
+    this.fighters.delete(id);
   }
   drawStorm(value) {
     this.stormRing.clear(); this.stormGlow.clear(); if (!value) return;
