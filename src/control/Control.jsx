@@ -18,6 +18,12 @@ export function Control() {
   const [s, setS] = useState({ players: [], settings: {}, giftCatalog: [], boss: { active: false } });
   const [config, setConfig] = useState({ mock: true, adminConfigured: false, powerCatalog: [] });
   const [token, setToken] = useState(() => sessionStorage.getItem('neon-admin-token') || '');
+  const [effectMode, setEffectMode] = useState(() => {
+    const stored = String(localStorage.getItem('neon-effect-mode') || '').toUpperCase();
+    if (['AUTO', 'BAIXA', 'NORMAL', 'ALTA'].includes(stored)) return stored;
+    localStorage.setItem('neon-effect-mode', 'AUTO');
+    return 'AUTO';
+  });
   const [names, setNames] = useState('Nebula\nCyberFox\nLimeGuard\nBlaze\nNovaX\nSpectra');
   const [selectedPlayerId, setSelectedPlayerId] = useState('');
   const [mappings, setMappings] = useState([]);
@@ -141,7 +147,7 @@ export function Control() {
           <label>Intensidade<select value={s.settings?.narratorIntensity ?? 80} onChange={(e) => run('/api/settings', { narratorIntensity: Number(e.target.value), intensity: Number(e.target.value) }, 'Intensidade atualizada')}><option value="40">40%</option><option value="60">60%</option><option value="80">80%</option><option value="100">100%</option></select></label>
           <label>Frequência<select value={s.settings?.narratorFrequency ?? 60} onChange={(e) => run('/api/settings', { narratorFrequency: Number(e.target.value), frequency: Number(e.target.value) }, 'Frequência atualizada')}><option value="30">30%</option><option value="60">60%</option><option value="80">80%</option></select></label>
           <label>Volume<select value={s.settings?.narratorVolume ?? 100} onChange={(e) => run('/api/settings', { narratorVolume: Number(e.target.value), volume: Number(e.target.value) }, 'Volume do narrador atualizado')}><option value="50">50%</option><option value="75">75%</option><option value="100">100%</option></select></label>
-          <label>Intensidade de efeitos<select value={s.settings?.effectIntensity || 'NORMAL'} onChange={(e) => run('/api/settings', { effectIntensity: e.target.value }, 'Intensidade visual atualizada')}><option value="BAIXA">BAIXA</option><option value="NORMAL">NORMAL</option><option value="ALTA">ALTA</option></select></label>
+          <label>Intensidade de efeitos<select aria-label="Effect Intensity" value={effectMode} onChange={(e) => { const value = e.target.value; setEffectMode(value); localStorage.setItem('neon-effect-mode', value); void run('/api/settings', { effectIntensity: value }, value === 'AUTO' ? 'Otimização automática ativada' : 'Intensidade visual atualizada'); }}><option value="AUTO">AUTO · adapta ao FPS</option><option value="BAIXA">BAIXA</option><option value="NORMAL">NORMAL</option><option value="ALTA">ALTA</option></select></label>
         </div>
         <div className="audioToggles"><label className="toggle compact"><span><b>Trilha eletrônica</b></span><input type="checkbox" checked={s.settings?.music ?? true} onChange={(e) => run('/api/settings', { music: e.target.checked }, 'Música atualizada')}/></label><label className="toggle compact"><span><b>Efeitos sonoros</b></span><input type="checkbox" checked={s.settings?.sound ?? true} onChange={(e) => run('/api/settings', { sound: e.target.checked }, 'Efeitos atualizados')}/></label></div>
       </article>

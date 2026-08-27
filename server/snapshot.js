@@ -151,7 +151,7 @@ function sanitizeSettings(settings = {}) {
   const arenaBackground = ['default', 'cyberpunk', 'space', 'retro'].includes(settings.arenaBackground) ? settings.arenaBackground : 'default';
   const voiceMode = ['male', 'female'].includes(settings.voiceMode) ? settings.voiceMode : 'male';
   const narratorStyle = ['explosive', 'esports', 'cinematic'].includes(settings.narratorStyle) ? settings.narratorStyle : 'explosive';
-  const effectIntensity = ['BAIXA', 'NORMAL', 'ALTA'].includes(String(settings.effectIntensity || '').toUpperCase()) ? String(settings.effectIntensity).toUpperCase() : 'NORMAL';
+  const effectIntensity = ['AUTO', 'BAIXA', 'NORMAL', 'ALTA'].includes(String(settings.effectIntensity || '').toUpperCase()) ? String(settings.effectIntensity).toUpperCase() : 'AUTO';
   const narratorPersonalityRaw = String(settings.narratorPersonality || 'HYPE').toUpperCase();
   const narratorPersonality = ['ESPORTS', 'HYPE', 'CINEMATIC', 'CHAOTIC', 'SARCASTIC'].includes(narratorPersonalityRaw) ? narratorPersonalityRaw : 'HYPE';
   return {

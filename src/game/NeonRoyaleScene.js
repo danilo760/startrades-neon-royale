@@ -19,9 +19,11 @@ const verticalViewport = () => typeof window !== 'undefined' && (new URLSearchPa
 const selectedPerformanceMode = (scene, now = performance.now()) => {
   if (scene.performanceModeCache && now - scene.performanceModeReadAt < 750) return scene.performanceModeCache;
   const stored = typeof localStorage !== 'undefined' ? String(localStorage.getItem('neon-effect-mode') || '').toUpperCase() : '';
+  const serverModeRaw = String(scene.state?.settings?.effectIntensity || 'AUTO').toUpperCase();
+  const serverMode = ['AUTO', 'BAIXA', 'NORMAL', 'ALTA', 'LOW', 'HIGH', 'EMERGENCY'].includes(serverModeRaw) ? serverModeRaw : 'AUTO';
   const mode = ['AUTO', 'BAIXA', 'NORMAL', 'ALTA', 'LOW', 'HIGH', 'EMERGENCY'].includes(stored)
     ? stored
-    : String(scene.state?.settings?.effectIntensity || 'AUTO').toUpperCase();
+    : serverMode;
   scene.performanceModeCache = mode;
   scene.performanceModeReadAt = now;
   return mode;

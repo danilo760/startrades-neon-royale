@@ -70,7 +70,7 @@ const bossDirector = new BossPhaseDirector({ state, publish });
 const giftCinematicDirector = new GiftCinematicDirector({ bus: eventBus, publish }).start();
 const liveInteractions = new LiveInteractionManager({ publish });
 const snapshots = createSnapshotController({ powerExecutor, telemetry, publish });
-state.settings.effectIntensity ||= 'NORMAL';
+state.settings.effectIntensity ||= 'AUTO';
 
 const applyNarratorConfig = () => narratorDirector.setConfig({
   personality: state.settings.narratorPersonality || 'HYPE',
@@ -208,7 +208,7 @@ app.post('/api/storm', admin('storm'), (req, res) => {
 });
 app.post('/api/settings', admin('settings'), (req, res) => {
   updateSettings(req.body);
-  if (['BAIXA', 'NORMAL', 'ALTA'].includes(String(req.body.effectIntensity || '').toUpperCase())) state.settings.effectIntensity = String(req.body.effectIntensity).toUpperCase();
+  if (['AUTO', 'BAIXA', 'NORMAL', 'ALTA'].includes(String(req.body.effectIntensity || '').toUpperCase())) state.settings.effectIntensity = String(req.body.effectIntensity).toUpperCase();
   narratorDirector.setConfig(req.body);
   emit('settings'); snapshots.critical('settings'); ok(res);
 });
@@ -317,7 +317,7 @@ async function listen() {
 async function bootstrap() {
   const [leaderboardReady, mappingStatus] = await Promise.all([initializeLeaderboard(), giftMappings.initialize()]);
   const restoreResult = await snapshots.restore();
-  state.settings.effectIntensity ||= 'NORMAL';
+  state.settings.effectIntensity ||= 'AUTO';
   applyNarratorConfig();
   await listen();
   startLoops();

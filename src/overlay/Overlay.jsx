@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Phaser from 'phaser';
-import { GameScene } from '../game/GameScene.js';
+import { GameScene } from '../game/NeonRoyaleScene.js';
 import { cleanupSpeech, prepareSpeech, setMusic, setSound, speak, unlockAudio } from '../audio.js';
 
 const wsUrl = () => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/events`;
@@ -65,6 +65,8 @@ export function Overlay() {
     let mounted = true;
     let musicEnabled = null;
     let soundEnabled = null;
+    let pendingState = null;
+    let stateFrame = 0;
     const killTimerMap = killTimers.current;
 
     const clearBanner = () => {
@@ -96,6 +98,19 @@ export function Overlay() {
       if (nextMusic !== musicEnabled) { musicEnabled = nextMusic; setMusic(nextMusic); }
       if (nextSound !== soundEnabled) { soundEnabled = nextSound; setSound(nextSound); }
     };
+    const flushState = () => {
+      stateFrame = 0;
+      const latest = pendingState;
+      pendingState = null;
+      if (!latest || !mounted) return;
+      setState(latest);
+      scene.syncState(latest);
+      syncAudioSettings(latest.settings);
+    };
+    const queueState = (next) => {
+      pendingState = next;
+      if (!stateFrame) stateFrame = requestAnimationFrame(flushState);
+    };
 
     const connect = () => {
       socket = new WebSocket(wsUrl());
@@ -108,11 +123,7 @@ export function Overlay() {
         let event;
         try { event = JSON.parse(data); } catch { return; }
         const next = event.state;
-        if (next && event.type !== 'combat:shot') {
-          setState(next);
-          scene.syncState(next);
-          syncAudioSettings(next.settings);
-        }
+        if (next && event.type !== 'combat:shot') queueState(next);
         if (event.type === 'gift:applied') { scene.triggerGift(event.payload); showGift({ ...event.payload, status: 'applied' }); }
         if (event.type === 'gift:pending') showGift({ ...event.payload, status: 'pending' });
         if (event.type === 'gift:rejected' && event.payload?.visualOnly) showGift({ ...event.payload, status: 'neutral', giftName: event.payload.giftName || 'Gift desconhecido' });
@@ -142,6 +153,8 @@ export function Overlay() {
       mounted = false;
       clearTimeout(retry);
       clearTimeout(giftTimer.current);
+      if (stateFrame) cancelAnimationFrame(stateFrame);
+      pendingState = null;
       for (const timer of killTimerMap.values()) clearTimeout(timer);
       killTimerMap.clear();
       socket?.close();
