@@ -26,7 +26,7 @@ test('Colossus 2.0 initializes two weak points and protects boss HP behind armor
   assert.equal(state.boss.armorActive, true);
   assert.equal(state.boss.coreOpen, false);
   const firstHp = state.boss.weakPoints[0].hp;
-  state.boss.hp -= 30; // simulates authoritative engine damage during the previous tick
+  state.boss.hp -= 30;
   clock.now += 250;
   director.tick(clock.now);
   assert.equal(state.boss.hp, 1000, 'armor diverts damage before it reaches boss HP');
@@ -66,6 +66,9 @@ test('all three phases have distinct cinematic attack rotations and telegraphs',
   for (const [phaseId, patterns] of expected) {
     state.boss.hp = phaseId === 1 ? 900 : phaseId === 2 ? 550 : 250;
     director.lastObservedBossHp = state.boss.hp;
+    clock.now += 1;
+    director.tick(clock.now); // establish authoritative phase before measuring its attack interval
+    assert.equal(state.boss.phase, phaseId);
     for (const pattern of patterns) {
       clock.now += bossPhaseDefinitions[phaseId].attackIntervalMs + 1;
       director.tick(clock.now);
@@ -89,6 +92,9 @@ test('dangerous boss attacks and overload remain non-lethal', () => {
   scheduledAttack.fn();
   assert.ok(state.players.every((player) => player.hp >= 10));
 
+  state.boss.armorActive = false;
+  state.boss.coreOpen = true;
+  state.boss.coreOpenUntil = 0;
   state.boss.hp = 100;
   director.lastObservedBossHp = 100;
   clock.now += 100;

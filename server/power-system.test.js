@@ -105,7 +105,7 @@ test('RivalryManager starts after repeated eliminations', () => {
   assert.ok(events.some((event) => event.type === 'rivalry:started'));
 });
 
-test('BossPhaseDirector publishes authoritative phase and starts overload', () => {
+test('BossPhaseDirector publishes authoritative phase and starts overload after core exposure', () => {
   const events = [];
   const state = makeState();
   state.boss = { id: 'boss-1', active: true, hp: 300, maxHp: 1000, x: 640, y: 360 };
@@ -114,7 +114,11 @@ test('BossPhaseDirector publishes authoritative phase and starts overload', () =
   director.tick(now);
   assert.equal(state.boss.phase, 3);
   assert.ok(events.some((event) => event.type === 'boss:phase' && event.payload.phase === 3));
+  state.boss.armorActive = false;
+  state.boss.coreOpen = true;
+  state.boss.coreOpenUntil = 0;
   state.boss.hp = 100;
+  director.lastObservedBossHp = 100;
   now += 100;
   director.tick(now);
   assert.ok(director.overload);
@@ -131,7 +135,6 @@ test('NarratorDirector stores safe personality presets in state', () => {
   assert.equal(config.frequency, 0);
   assert.equal(state.settings.narratorPersonality, 'CHAOTIC');
 });
-
 
 test('LiveInteractionManager rate-limits votes and aggregates comment milestones', () => {
   let now = 1000;
