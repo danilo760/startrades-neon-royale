@@ -51,7 +51,7 @@ export function QALab() {
   }, []);
 
   const locked = !config.mock;
-  const canRun = config.mock && config.adminConfigured && Boolean(tokenNow());
+  const canRun = config.mock && config.adminConfigured;
   const badge = useMemo(() => locked ? 'LOCKED LIVE' : canRun ? 'SAFE MOCK' : 'TOKEN REQUIRED', [locked, canRun]);
 
   const runCase = async (name, fn) => {

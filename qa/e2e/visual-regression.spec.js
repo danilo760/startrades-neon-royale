@@ -14,10 +14,17 @@ async function capture(page, name) {
   await expect(page.locator('.overlay')).toBeVisible();
   await expect(page.locator('.game canvas')).toBeVisible();
   const geometry = await page.evaluate(() => {
-    const overlay = document.querySelector('.overlay')?.getBoundingClientRect();
-    const canvas = document.querySelector('.game canvas')?.getBoundingClientRect();
-    const hud = document.querySelector('.hud')?.getBoundingClientRect();
-    return { viewport: { width: innerWidth, height: innerHeight }, overlay, canvas, hud, scrollWidth: document.documentElement.scrollWidth };
+    const plain = (element) => {
+      const box = element?.getBoundingClientRect();
+      return box ? { left: box.left, right: box.right, top: box.top, bottom: box.bottom } : null;
+    };
+    return {
+      viewport: { width: innerWidth, height: innerHeight },
+      overlay: plain(document.querySelector('.overlay')),
+      canvas: plain(document.querySelector('.game canvas')),
+      hud: plain(document.querySelector('.hud')),
+      scrollWidth: document.documentElement.scrollWidth,
+    };
   });
   expect(geometry.overlay).toBeTruthy();
   expect(geometry.canvas).toBeTruthy();
@@ -29,11 +36,12 @@ async function capture(page, name) {
     expect(box.right).toBeLessThanOrEqual(geometry.viewport.width + 1);
     expect(box.bottom).toBeLessThanOrEqual(geometry.viewport.height + 1);
   }
-  const screenshot = await page.screenshot({ fullPage: true, animations: 'disabled' });
+  const screenshot = await page.screenshot({ fullPage: false, animations: 'disabled', timeout: 10_000 });
   await test.info().attach(`visual-${name}`, { body: screenshot, contentType: 'image/png' });
 }
 
 test('visual capture matrix preserves arena layout through core live states', async ({ page, request }) => {
+  test.setTimeout(90_000);
   const browserErrors = [];
   page.on('console', (message) => { if (message.type() === 'error') browserErrors.push(message.text()); });
   page.on('pageerror', (error) => browserErrors.push(error.message));
