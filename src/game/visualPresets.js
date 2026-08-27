@@ -19,10 +19,7 @@ export const ARENA_THEMES = Object.freeze({
 
 const hashString = (value = '') => {
   let hash = 2166136261;
-  for (const char of String(value)) {
-    hash ^= char.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
+  for (const char of String(value)) { hash ^= char.charCodeAt(0); hash = Math.imul(hash, 16777619); }
   return hash >>> 0;
 };
 
@@ -31,13 +28,22 @@ export function combatantPresetFor(player = {}) {
   return COMBATANT_MATERIALS[hashString(stable) % COMBATANT_MATERIALS.length];
 }
 
-export function arenaPresetFor(name = 'default') {
-  return ARENA_THEMES[name] || ARENA_THEMES.default;
+export function arenaPresetFor(name = 'default') { return ARENA_THEMES[name] || ARENA_THEMES.default; }
+
+export function requestedVisualMode(scene) {
+  const runtime = String(scene?.effectiveEffectIntensity || '').toUpperCase();
+  if (['EMERGENCY', 'LOW', 'NORMAL', 'HIGH'].includes(runtime)) return runtime;
+  const stored = typeof localStorage !== 'undefined' ? String(localStorage.getItem('neon-effect-mode') || '').toUpperCase() : '';
+  if (stored === 'AUTO') return String(scene?.performanceDiagnostics?.level || 'NORMAL').toUpperCase();
+  if (['BAIXA', 'LOW', 'NORMAL', 'ALTA', 'HIGH'].includes(stored)) return stored;
+  return String(scene?.state?.settings?.effectIntensity || 'NORMAL').toUpperCase();
 }
 
 export function visualQualityFor(setting = 'NORMAL') {
   const value = String(setting || 'NORMAL').toUpperCase();
-  if (['BAIXA', 'LOW', 'REDUCED'].includes(value)) return { id: 'REDUCED', ambientCount: 14, trailInterval: 150, decorationAlpha: 0.55, bloom: 0.65 };
-  if (['ALTA', 'HIGH'].includes(value)) return { id: 'HIGH', ambientCount: 38, trailInterval: 72, decorationAlpha: 1, bloom: 1.1 };
-  return { id: 'NORMAL', ambientCount: 26, trailInterval: 100, decorationAlpha: 0.8, bloom: 0.85 };
+  if (value === 'EMERGENCY') return { id: 'EMERGENCY', ambientCount: 4, trailInterval: 280, decorationAlpha: 0.22, bloom: 0.18, secondaryVfx: false };
+  if (value === 'LOW') return { id: 'LOW', ambientCount: 9, trailInterval: 200, decorationAlpha: 0.4, bloom: 0.42, secondaryVfx: false };
+  if (['BAIXA', 'REDUCED'].includes(value)) return { id: 'REDUCED', ambientCount: 14, trailInterval: 150, decorationAlpha: 0.55, bloom: 0.65, secondaryVfx: true };
+  if (['ALTA', 'HIGH'].includes(value)) return { id: 'HIGH', ambientCount: 38, trailInterval: 72, decorationAlpha: 1, bloom: 1.1, secondaryVfx: true };
+  return { id: 'NORMAL', ambientCount: 26, trailInterval: 100, decorationAlpha: 0.8, bloom: 0.85, secondaryVfx: true };
 }

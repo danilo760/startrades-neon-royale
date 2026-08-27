@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { combatantPresetFor, visualQualityFor } from './visualPresets.js';
+import { combatantPresetFor, requestedVisualMode, visualQualityFor } from './visualPresets.js';
 
 const TEAM_COLORS = { blue: 0x35eaff, red: 0xff334e };
 
@@ -13,7 +13,7 @@ export function decorateCombatant(scene, fighter, player) {
     drawPattern(accent, preset);
     fighter.container.addAt(ring, 4); fighter.container.addAt(accent, 6); fighter.container.addAt(core, 7);
     Object.assign(fighter, { materialRing: ring, materialCore: core, materialAccent: accent, materialId: preset.id });
-    scene.vfx?.attachBloom?.(ring, visualQualityFor(scene.state?.settings?.effectIntensity).bloom);
+    scene.vfx?.attachBloom?.(ring, visualQualityFor(requestedVisualMode(scene)).bloom);
   }
   applyMaterial(scene, fighter, player, preset);
   return fighter;
@@ -46,24 +46,29 @@ function applyMaterial(scene, fighter, player, preset) {
   const teamColor = TEAM_COLORS[player.team] || TEAM_COLORS.blue;
   const primary = starActive ? 0xffd24d : teamMode ? teamColor : preset.primary;
   const secondary = starActive ? 0xfff3b0 : preset.secondary;
-  fighter.ball.setFillStyle(primary, 1).setStrokeStyle(4, secondary, 0.82);
-  fighter.glow.setFillStyle(primary, 0.1).setStrokeStyle(2, primary, 0.38);
-  fighter.materialRing?.setStrokeStyle(starActive ? 3 : 2, secondary, starActive ? 0.8 : 0.5);
-  fighter.materialCore?.setFillStyle(secondary, starActive ? 0.3 : 0.16).setStrokeStyle(1, primary, 0.55);
-  if (fighter.materialAccent) drawPattern(fighter.materialAccent, { ...preset, primary, secondary });
+  const quality = visualQualityFor(requestedVisualMode(scene));
+  fighter.ball.setFillStyle(primary, 1).setStrokeStyle(quality.id === 'EMERGENCY' ? 3 : 4, secondary, 0.82);
+  fighter.glow.setFillStyle(primary, quality.id === 'EMERGENCY' ? 0.045 : quality.id === 'LOW' ? 0.07 : 0.1).setStrokeStyle(2, primary, quality.id === 'EMERGENCY' ? 0.18 : 0.38);
+  fighter.materialRing?.setStrokeStyle(starActive ? 3 : 2, secondary, quality.id === 'EMERGENCY' ? 0.24 : starActive ? 0.8 : 0.5);
+  fighter.materialCore?.setFillStyle(secondary, starActive ? 0.3 : quality.id === 'EMERGENCY' ? 0.08 : 0.16).setStrokeStyle(1, primary, 0.55);
+  if (fighter.materialAccent) {
+    fighter.materialAccent.setVisible(quality.id !== 'EMERGENCY');
+    if (quality.id !== 'EMERGENCY') drawPattern(fighter.materialAccent, { ...preset, primary, secondary });
+  }
   fighter.materialPreset = { ...preset, trail: starActive ? 0xffd24d : teamMode ? teamColor : preset.trail };
 }
 
 export function updateCombatantVisuals(scene, fighter, time) {
   if (!fighter?.data?.alive || !fighter.materialPreset) return;
   const preset = fighter.materialPreset;
-  const quality = visualQualityFor(scene.state?.settings?.effectIntensity || 'NORMAL');
-  const pulse = 1 + Math.sin(time / 260 + fighter.container.x * 0.01) * ((preset.pulse || 1.04) - 1);
+  const quality = visualQualityFor(requestedVisualMode(scene));
+  const pulseScale = quality.id === 'EMERGENCY' ? 0.35 : quality.id === 'LOW' ? 0.65 : 1;
+  const pulse = 1 + Math.sin(time / 260 + fighter.container.x * 0.01) * ((preset.pulse || 1.04) - 1) * pulseScale;
   fighter.materialRing?.setScale(pulse);
-  fighter.materialAccent?.setRotation(preset.pattern === 'orbit' ? time / 1600 : 0);
+  if (quality.secondaryVfx) fighter.materialAccent?.setRotation(preset.pattern === 'orbit' ? time / 1600 : 0);
   const moving = Math.hypot((fighter.data.x ?? fighter.container.x) - fighter.container.x, (fighter.data.y ?? fighter.container.y) - fighter.container.y) > 1;
-  if (moving && time > (fighter.materialTrailAt || 0)) {
+  if (moving && quality.id !== 'EMERGENCY' && time > (fighter.materialTrailAt || 0)) {
     fighter.materialTrailAt = time + quality.trailInterval;
-    scene.vfx.trail(fighter.container.x, fighter.container.y + 18, preset.trail, quality.id === 'REDUCED' ? 0.28 : 0.38);
+    scene.vfx.trail(fighter.container.x, fighter.container.y + 18, preset.trail, ['LOW', 'REDUCED'].includes(quality.id) ? 0.28 : 0.38);
   }
 }

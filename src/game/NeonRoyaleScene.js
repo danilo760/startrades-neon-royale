@@ -4,14 +4,30 @@ import { decorateCombatant, updateCombatantVisuals } from './CombatantVisuals.js
 import { destroyColossus, renderColossusAttack, syncColossus } from './ColossusVisuals.js';
 import { playLayeredSfx, stopAudioLayers } from './AudioLayers.js';
 import { ArenaDirector } from './ArenaDirector.js';
+import { PerformanceWatchdog } from './PerformanceWatchdog.js';
 
 const bossAttackSound = (pattern = '') => /METEOR/i.test(pattern) ? 'meteor' : /LASER|BEAM/i.test(pattern) ? 'laser-charge' : /OVERLOAD/i.test(pattern) ? 'boss-overload' : 'boss-phase';
+const normalizeManualQuality = (value = 'NORMAL') => {
+  const mode = String(value || 'NORMAL').toUpperCase();
+  if (['BAIXA', 'LOW', 'REDUCED'].includes(mode)) return 'LOW';
+  if (['ALTA', 'HIGH'].includes(mode)) return 'HIGH';
+  if (mode === 'EMERGENCY') return 'EMERGENCY';
+  return 'NORMAL';
+};
+const selectedPerformanceMode = (scene) => {
+  const stored = typeof localStorage !== 'undefined' ? String(localStorage.getItem('neon-effect-mode') || '').toUpperCase() : '';
+  if (['AUTO', 'BAIXA', 'NORMAL', 'ALTA', 'LOW', 'HIGH', 'EMERGENCY'].includes(stored)) return stored;
+  return String(scene.state?.settings?.effectIntensity || 'AUTO').toUpperCase();
+};
 
 export class GameScene extends BaseGameScene {
   constructor(bridge) {
     super(bridge);
     this.arenaDirector = new ArenaDirector();
     this.presentation = this.arenaDirector.status();
+    this.performanceWatchdog = new PerformanceWatchdog();
+    this.performanceDiagnostics = this.performanceWatchdog.status();
+    this.effectiveEffectIntensity = 'NORMAL';
   }
 
   drawArena() { createArenaVisuals(this); }
@@ -30,9 +46,7 @@ export class GameScene extends BaseGameScene {
     return fighter ? decorateCombatant(this, fighter, player) : fighter;
   }
 
-  present(kind, payload, run) {
-    return this.arenaDirector.enqueue(kind, payload, run);
-  }
+  present(kind, payload, run) { return this.arenaDirector.enqueue(kind, payload, run); }
 
   triggerGift(event = {}) {
     this.arenaDirector.observe('gift:applied');
@@ -41,13 +55,9 @@ export class GameScene extends BaseGameScene {
   }
 
   battleStart() { this.present('storm', {}, () => super.battleStart()); }
-
   battleEnd(winner) { this.present('victory', { winner }, () => super.battleEnd(winner)); }
-
   suddenDeath() { this.present('sudden-death', {}, () => super.suddenDeath()); }
-
   stormSurge(value) { this.present('storm', { value }, () => super.stormSurge(value)); }
-
   likeBurst() { this.present('like', {}, () => super.likeBurst()); }
 
   syncBoss(boss) {
@@ -72,10 +82,28 @@ export class GameScene extends BaseGameScene {
     });
   }
 
+  updatePerformance(delta) {
+    const children = this.children?.list?.length || 0;
+    const projectiles = Number(this.projectiles?.children?.size || this.projectilePool?.children?.size || this.shots?.size || 0);
+    const diagnostics = this.performanceWatchdog.sample(delta, {
+      players: this.state?.players?.length || 0,
+      projectiles,
+      vfx: children,
+    });
+    this.performanceDiagnostics = diagnostics;
+    const mode = selectedPerformanceMode(this);
+    const next = mode === 'AUTO' ? diagnostics.level : normalizeManualQuality(mode);
+    const qualityChanged = next !== this.effectiveEffectIntensity;
+    this.effectiveEffectIntensity = next;
+    if (qualityChanged && this.arenaBase) applyArenaVisuals(this, this.state?.settings?.arenaBackground || 'default');
+    if (typeof window !== 'undefined') window.__NEON_PERF__ = { ...diagnostics, requestedMode: mode, effectiveLevel: next, arenaDirector: this.presentation?.level || 'CALM' };
+  }
+
   update(time, delta) {
     super.update(time, delta);
     if (!this.state || this.juice?.isHitStopped()) return;
     this.presentation = this.arenaDirector.update(this.state);
+    this.updatePerformance(delta);
     for (const fighter of this.fighters.values()) updateCombatantVisuals(this, fighter, time);
   }
 
@@ -84,6 +112,7 @@ export class GameScene extends BaseGameScene {
     stopAudioLayers();
     destroyColossus(this);
     destroyArenaVisuals(this);
+    if (typeof window !== 'undefined') delete window.__NEON_PERF__;
     super.cleanupScene();
   }
 }
