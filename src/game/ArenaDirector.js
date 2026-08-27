@@ -53,9 +53,10 @@ export function presentationProfile(level = 'CALM') {
 }
 
 export class ArenaDirector {
-  constructor({ now = () => Date.now(), schedule = (fn, delay) => setTimeout(fn, delay), minCueGapMs = 260 } = {}) {
+  constructor({ now = () => Date.now(), schedule = (fn, delay) => setTimeout(fn, delay), cancelSchedule = clearTimeout, minCueGapMs = 260 } = {}) {
     this.now = now;
     this.schedule = schedule;
+    this.cancelSchedule = cancelSchedule;
     this.minCueGapMs = Math.max(120, Number(minCueGapMs) || 260);
     this.queue = [];
     this.running = false;
@@ -95,7 +96,7 @@ export class ArenaDirector {
   }
 
   drain() {
-    if (this.running || !this.queue.length) return;
+    if (this.running || this.timer || !this.queue.length) return;
     const delay = Math.max(0, this.minCueGapMs - (this.now() - this.lastCueAt));
     const execute = () => {
       this.timer = null;
@@ -113,7 +114,7 @@ export class ArenaDirector {
   }
 
   clear() {
-    if (this.timer) clearTimeout(this.timer);
+    if (this.timer) this.cancelSchedule(this.timer);
     this.timer = null;
     this.queue.length = 0;
     this.running = false;
