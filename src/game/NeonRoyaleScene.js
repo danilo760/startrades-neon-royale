@@ -1,6 +1,7 @@
 import { GameScene as BaseGameScene } from './GameScene.js';
 import { applyArenaVisuals, createArenaVisuals, destroyArenaVisuals, drawArenaStorm } from './ArenaVisuals.js';
 import { decorateCombatant, updateCombatantVisuals } from './CombatantVisuals.js';
+import { destroyColossus, renderColossusAttack, syncColossus } from './ColossusVisuals.js';
 
 export class GameScene extends BaseGameScene {
   drawArena() { createArenaVisuals(this); }
@@ -14,6 +15,12 @@ export class GameScene extends BaseGameScene {
     return fighter ? decorateCombatant(this, fighter, player) : fighter;
   }
 
+  syncBoss(boss) { syncColossus(this, boss); }
+
+  renderBossAttack(event = {}) {
+    if (!renderColossusAttack(this, event)) super.renderBossAttack(event);
+  }
+
   update(time, delta) {
     super.update(time, delta);
     if (!this.state || this.juice?.isHitStopped()) return;
@@ -21,6 +28,7 @@ export class GameScene extends BaseGameScene {
   }
 
   cleanupScene() {
+    destroyColossus(this);
     destroyArenaVisuals(this);
     super.cleanupScene();
   }
