@@ -87,6 +87,104 @@ test('PowerExecutor rejects disabled mappings and absurd Supernova stays non-let
   executor.dispose();
 });
 
+test('PowerExecutor delayed powers cannot hit a later round after phase returns to running', () => {
+  let now = 300_000;
+  const state = makeState();
+  state.players[1].x = 320;
+  state.players[1].y = 300;
+  const events = [];
+  const scheduled = [];
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const originalClearInterval = globalThis.clearInterval;
+  globalThis.setTimeout = (fn, delay) => {
+    const timer = { unref() {} };
+    scheduled.push({ fn, delay, timer });
+    return timer;
+  };
+  globalThis.clearTimeout = () => {};
+  globalThis.clearInterval = () => {};
+  const executor = new PowerExecutor({ state, registry: powerRegistry, now: () => now, publish: (type, payload) => events.push({ type, payload }) });
+  try {
+    const orbital = normalizeGiftMapping({ giftId: 'laser-test', giftName: 'Laser', enabled: true, powerId: 'orbital-laser', targetMode: 'TARGET_PLAYER', magnitude: 24, durationMs: 1300, cooldownMs: 0 }, powerRegistry);
+    const result = executor.execute({ eventId: 'laser-round-a', senderUserId: 'u1', targetUserId: 'u2', mapping: orbital });
+    assert.equal(result.status, 'applied');
+    assert.equal(scheduled.length, 1);
+    const hpBefore = state.players[1].hp;
+
+    state.phase = 'ended';
+    state.roundId = 'round-next';
+    state.phase = 'running';
+    state.players[1].spawnInvulnerableUntil = now + 10_000;
+    now += result.warningMs + 1;
+    scheduled[0].fn();
+
+    assert.equal(state.players[1].hp, hpBefore);
+    assert.equal(executor.timers.size, 0);
+    assert.equal(events.some((event) => event.type === 'power:completed' && event.payload.eventId === 'laser-round-a'), false);
+  } finally {
+    executor.cancelPending();
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    globalThis.clearInterval = originalClearInterval;
+  }
+});
+
+test('PowerExecutor safeDamage preserves HP and shield during spawn invulnerability', () => {
+  let now = 400_000;
+  const state = makeState();
+  const player = state.players[1];
+  player.hp = 72;
+  player.shield = 14;
+  player.spawnInvulnerableUntil = now + 3000;
+  const executor = new PowerExecutor({ state, registry: powerRegistry, now: () => now, publish: () => {} });
+  assert.equal(executor.safeDamage(player, 30, 10), 0);
+  assert.equal(player.hp, 72);
+  assert.equal(player.shield, 14);
+  now += 3001;
+  assert.equal(executor.safeDamage(player, 10, 10), 10);
+  executor.dispose();
+});
+
+test('PowerExecutor cancelPending clears only round timers and preserves idempotency/cooldowns', () => {
+  let now = 500_000;
+  const state = makeState();
+  const scheduled = [];
+  const cleared = [];
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const originalClearInterval = globalThis.clearInterval;
+  globalThis.setTimeout = (fn) => {
+    const timer = { unref() {} };
+    scheduled.push({ fn, timer });
+    return timer;
+  };
+  globalThis.clearTimeout = (timer) => { cleared.push(timer); };
+  globalThis.clearInterval = () => {};
+  const executor = new PowerExecutor({ state, registry: powerRegistry, now: () => now, publish: () => {} });
+  try {
+    const orbital = normalizeGiftMapping({ giftId: 'laser-cancel', giftName: 'Laser', enabled: true, powerId: 'orbital-laser', targetMode: 'TARGET_PLAYER', magnitude: 18, durationMs: 1300, cooldownMs: 1000 }, powerRegistry);
+    const result = executor.execute({ eventId: 'laser-cancel-1', senderUserId: 'u1', targetUserId: 'u2', mapping: orbital });
+    assert.equal(result.status, 'applied');
+    assert.equal(executor.timers.size, 1);
+    assert.ok(executor.seen.has('laser-cancel-1'));
+    assert.ok(executor.cooldowns.size > 0);
+    assert.ok(executor.globalCooldowns.size > 0);
+
+    assert.equal(executor.cancelPending(), 1);
+    assert.equal(executor.timers.size, 0);
+    assert.equal(cleared.length, 1);
+    assert.ok(executor.seen.has('laser-cancel-1'));
+    assert.ok(executor.cooldowns.size > 0);
+    assert.ok(executor.globalCooldowns.size > 0);
+  } finally {
+    executor.cancelPending();
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    globalThis.clearInterval = originalClearInterval;
+  }
+});
+
 test('ComboManager emits milestones without damage multiplier', () => {
   const events = [];
   let now = 1_000;

@@ -32,10 +32,15 @@ export class PowerExecutor {
     for (const [key, expiresAt] of this.globalCooldowns) if (expiresAt <= now) this.globalCooldowns.delete(key);
   }
 
-  schedule(fn, delayMs) {
+  isRoundActive(roundId) {
+    return this.state.phase === 'running' && this.state.roundId === roundId;
+  }
+
+  schedule(fn, delayMs, roundId = this.state.roundId) {
     if (this.timers.size >= MAX_TIMERS) return null;
     const timer = setTimeout(() => {
       this.timers.delete(timer);
+      if (!this.isRoundActive(roundId)) return;
       try { fn(); } catch (error) { console.warn(`[power-timer] ${String(error?.message || error).slice(0, 100)}`); }
     }, Math.max(0, Math.min(10_000, Number(delayMs) || 0)));
     timer.unref?.();
@@ -43,11 +48,11 @@ export class PowerExecutor {
     return timer;
   }
 
-  scheduleInterval(fn, intervalMs, durationMs) {
+  scheduleInterval(fn, intervalMs, durationMs, roundId = this.state.roundId) {
     if (this.timers.size >= MAX_TIMERS) return null;
     const started = this.now();
     const timer = setInterval(() => {
-      if (this.now() - started >= durationMs) {
+      if (!this.isRoundActive(roundId) || this.now() - started >= durationMs) {
         clearInterval(timer);
         this.timers.delete(timer);
         return;
@@ -87,7 +92,7 @@ export class PowerExecutor {
   }
 
   safeDamage(player, amount, floorHp = 10) {
-    if (!player?.alive) return 0;
+    if (!player?.alive || Number(player.spawnInvulnerableUntil || 0) > this.now()) return 0;
     let remaining = Math.max(0, Number(amount) || 0);
     const absorbed = Math.min(Math.max(0, Number(player.shield) || 0), remaining);
     player.shield = Math.max(0, Number(player.shield || 0) - absorbed);
@@ -191,7 +196,7 @@ export class PowerExecutor {
   }
 
   applyPower(context) {
-    const { power, limits, targetInfo, startedAt } = context;
+    const { power, limits, targetInfo, startedAt, roundId } = context;
     const target = targetInfo.primary;
     const alive = this.players();
 
@@ -229,7 +234,7 @@ export class PowerExecutor {
     if (power.id === 'meteor') {
       const meteorTarget = target || alive[Math.floor(this.random() * alive.length)];
       if (!meteorTarget) return { applied: false, reason: 'no-target' };
-      const warningMs = Math.max(1400, Math.min(2400, limits.durationMs || 2000));
+      const warningMs = Math.max(1400, Math.min(1400, limits.durationMs || 2000));
       const hazard = { id: randomUUID(), type: 'meteor', x: meteorTarget.x, y: meteorTarget.y, targetPlayerId: meteorTarget.id, radius: 110, damage: Math.min(24, limits.magnitude), createdAt: startedAt, impactAt: startedAt + warningMs, expiresAt: startedAt + warningMs + 1400, visualEffect: limits.visualPreset, resolved: false };
       this.state.hazards = [...(this.state.hazards || []).slice(-11), hazard];
       return { applied: true, hazardId: hazard.id, hazardTargetPlayerId: meteorTarget.id, warningMs };
@@ -257,7 +262,7 @@ export class PowerExecutor {
       for (const player of affected) this.pull(player, cx, cy, strength * 0.3);
       this.scheduleInterval(() => {
         for (const player of this.players()) if (Math.hypot(player.x - cx, player.y - cy) <= 440) this.pull(player, cx, cy, strength * 0.08);
-      }, 140, limits.durationMs);
+      }, 140, limits.durationMs, roundId);
       return { applied: true, x: cx, y: cy, affectedPlayerIds: affected.map((player) => player.id), durationMs: limits.durationMs };
     }
 
@@ -302,7 +307,7 @@ export class PowerExecutor {
           if (damage) hits.push({ playerId: player.id, damage });
         }
         this.emit('power:completed', { powerId: power.id, eventId: context.eventId, x, y, hits });
-      }, warningMs);
+      }, warningMs, roundId);
       return { applied: Boolean(scheduled), scheduled: true, x, y, targetPlayerId: targetId, warningMs };
     }
 
@@ -318,7 +323,7 @@ export class PowerExecutor {
           player.y = anchor.y + (player.y - anchor.y) * keep;
           player.targetX = player.x; player.targetY = player.y;
         }
-      }, 80, limits.durationMs);
+      }, 80, limits.durationMs, roundId);
       return { applied: true, affectedPlayerIds: affected.map((player) => player.id), slowFactor: limits.magnitude, durationMs: limits.durationMs };
     }
 
@@ -338,7 +343,7 @@ export class PowerExecutor {
       for (const player of alive) if (Math.hypot(player.x - cx, player.y - cy) <= 360) this.pull(player, cx, cy, 0.2);
       this.schedule(() => {
         for (const player of this.players()) if (Math.hypot(player.x - cx, player.y - cy) <= 330) this.pull(player, cx, cy, 0.28);
-      }, Math.floor(warningMs / 2));
+      }, Math.floor(warningMs / 2), roundId);
       const scheduled = this.schedule(() => {
         const hits = [];
         for (const player of this.players()) {
@@ -349,7 +354,7 @@ export class PowerExecutor {
           if (damage) hits.push({ playerId: player.id, damage });
         }
         this.emit('power:completed', { powerId: power.id, eventId: context.eventId, x: cx, y: cy, hits });
-      }, warningMs);
+      }, warningMs, roundId);
       return { applied: Boolean(scheduled), scheduled: true, x: cx, y: cy, warningMs };
     }
 
@@ -359,19 +364,25 @@ export class PowerExecutor {
       const scheduled = this.schedule(() => {
         const hits = this.players().map((player) => ({ playerId: player.id, damage: this.safeDamage(player, limits.magnitude, 10) }));
         this.emit('power:completed', { powerId: power.id, eventId: context.eventId, x: ARENA.cx, y: ARENA.cy, hits, ultimate: true });
-      }, warningMs);
+      }, warningMs, roundId);
       return { applied: Boolean(scheduled), scheduled: true, warningMs, nonLethalFloorHp: 10 };
     }
 
     return { applied: false, reason: 'unsupported-power' };
   }
 
-  dispose() {
+  cancelPending() {
+    const pending = this.timers.size;
     for (const timer of this.timers) {
       clearTimeout(timer);
       clearInterval(timer);
     }
     this.timers.clear();
+    return pending;
+  }
+
+  dispose() {
+    this.cancelPending();
     this.seen.clear();
     this.cooldowns.clear();
     this.globalCooldowns.clear();
