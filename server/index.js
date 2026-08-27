@@ -4,11 +4,21 @@ import express from 'express';
 import { WebSocketServer } from 'ws';
 import { TikTokLive } from 'tiktok-live-api';
 import { authorizeAdminRequest, sanitizedAdminLog } from './admin.js';
-import { GiftEventLedger, resolveGiftDefinition, sanitizeDisplayName, sanitizeNarrationName } from './gifts.js';
+import { GiftEventLedger, sanitizeDisplayName, sanitizeNarrationName } from './gifts.js';
 import { addBots, applyComment, applyGiftEffect, finish, likes, pause, reset, setStorm, spawnBoss, start, state, tickGame, tickStorm, updateSettings } from './engine.js';
-import { ENGINE_EVENT_CHANNEL, eventBus } from './event-bus.js';
+import { ENGINE_EVENT_CHANNEL, eventBus, publishEngineEvent } from './event-bus.js';
 import { getLeaderboard, initializeLeaderboard } from './leaderboard.js';
 import { createNarrator } from './narrator.js';
+import { powerRegistry } from './powers/PowerRegistry.js';
+import { GiftMappingService } from './powers/GiftMappingService.js';
+import { PowerExecutor } from './powers/PowerExecutor.js';
+import { ComboManager } from './powers/ComboManager.js';
+import { RivalryManager } from './powers/RivalryManager.js';
+import { NarratorDirector } from './powers/NarratorDirector.js';
+import { BossPhaseDirector } from './powers/BossPhaseDirector.js';
+import { GiftCinematicDirector } from './powers/GiftCinematicDirector.js';
+import { LiveInteractionManager } from './powers/LiveInteractionManager.js';
+import { telemetry } from './telemetry.js';
 
 const cfg = {
   username: process.env.TIKTOK_USERNAME || 'startrades01',
@@ -28,17 +38,46 @@ app.use(express.json({ limit: '200kb' }));
 app.use(express.static('dist'));
 const server = app.listen(cfg.port, () => console.log(`StarTrades LIVE http://127.0.0.1:${cfg.port} (${cfg.mock ? 'SIMULAÇÃO' : '@' + cfg.username})`));
 const wss = new WebSocketServer({ server, path: '/events' });
-const publicState = () => ({ ...state, arenaKings: getLeaderboard().slice(0, 3) });
+const giftMappings = new GiftMappingService();
+const publicState = () => ({ ...state, arenaKings: getLeaderboard().slice(0, 3), powerCatalog: powerRegistry.publicCatalog() });
 const emit = (type, payload = {}) => {
+  const started = performance.now();
   const data = JSON.stringify({ type, payload, state: publicState() });
-  wss.clients.forEach((client) => client.readyState === 1 && client.send(data));
+  let delivered = 0;
+  wss.clients.forEach((client) => {
+    if (client.readyState !== 1) return;
+    client.send(data);
+    delivered += 1;
+  });
+  telemetry.timing('ws_broadcast_latency', performance.now() - started, { 'ws.event': type, 'ws.connections': wss.clients.size, 'ws.delivered': delivered, 'round.id': state.roundId });
 };
-wss.on('connection', (socket) => socket.send(JSON.stringify({ type: 'state', state: publicState() })));
+wss.on('connection', (socket) => {
+  telemetry.gauge('active_connections', wss.clients.size);
+  socket.send(JSON.stringify({ type: 'state', state: publicState() }));
+});
 void initializeLeaderboard().then(() => emit('leaderboard:ready', { count: getLeaderboard().length }));
+void giftMappings.initialize().then((status) => emit('gift-mappings:ready', status));
 
 const giftLedger = new GiftEventLedger();
 eventBus.on(ENGINE_EVENT_CHANNEL, (event) => emit(event.type, event.payload));
 const narrator = createNarrator({ emit, state, ollamaUrl: cfg.ollama, model: cfg.model });
+const publish = (type, payload = {}) => publishEngineEvent(type, payload);
+const powerExecutor = new PowerExecutor({ state, registry: powerRegistry, publish, spawnBoss, telemetry });
+const comboManager = new ComboManager({ publish });
+const rivalryManager = new RivalryManager({ publish });
+const narratorDirector = new NarratorDirector({ bus: eventBus, narrator, state }).start();
+const bossDirector = new BossPhaseDirector({ state, publish });
+const giftCinematicDirector = new GiftCinematicDirector({ bus: eventBus, publish }).start();
+const liveInteractions = new LiveInteractionManager({ publish });
+state.settings.effectIntensity ||= 'NORMAL';
+narratorDirector.setConfig({ personality: state.settings.narratorPersonality || 'HYPE', intensity: state.settings.narratorIntensity ?? 80, frequency: state.settings.narratorFrequency ?? 60, volume: state.settings.narratorVolume ?? 100, enabled: state.settings.narratorEnabled ?? true });
+
+eventBus.on('gift:applied', (payload = {}) => {
+  const target = state.players.find((player) => player.id === payload.targetPlayerId);
+  comboManager.ingest({ ...payload, team: target?.team || '', at: Date.now() });
+});
+eventBus.on('player:eliminated', (payload = {}) => rivalryManager.recordElimination(payload));
+eventBus.on('round:ended', () => { comboManager.reset(); rivalryManager.endAll('round-ended'); liveInteractions.reset(); });
 
 function chat(event) {
   const user = event.user || {};
@@ -49,8 +88,37 @@ function chat(event) {
   if (!senderUserId) { emit('comment', { username, comment, rejected: 'missing-user-id' }); return; }
   const result = applyComment({ username, platformUserId: senderUserId, avatarUrl, comment });
   emit('comment', { username, comment, result });
-  if (result.kind === 'join') narrator.local(`${sanitizeNarrationName(result.player.username)} entrou na arena.`, { priority: 1, emotion: 'welcome', eventType: 'player:joined' });
-  else if (/^(oi|olá|ola|como joga|!ajuda)$/i.test(comment.trim())) narrator.local('Use exclamação entrar para participar. Gifts ativam efeitos balanceados de entretenimento.', { priority: 1, emotion: 'friendly', eventType: 'help' });
+  if (result.kind === 'join') {
+    narrator.local(`${sanitizeNarrationName(result.player.username)} entrou na arena.`, { priority: 1, emotion: 'welcome', eventType: 'player:joined' });
+    rivalryManager.evaluateArenaChallenge(result.player, getLeaderboard());
+  } else if (/^(oi|olá|ola|como joga|!ajuda)$/i.test(comment.trim())) narrator.local('Use exclamação entrar para participar. Gifts ativam efeitos balanceados de entretenimento.', { priority: 1, emotion: 'friendly', eventType: 'help' });
+  liveInteractions.ingestComment({ senderUserId, comment, roundId: state.roundId });
+}
+
+function processMappedGift(input = {}) {
+  const started = performance.now();
+  const mapping = giftMappings.resolve(input.giftId, input.giftName);
+  telemetry.event('tiktok.gift.received', { 'gift.id': input.giftId || '', 'round.id': state.roundId, source: input.source || 'tiktok' });
+  if (!mapping) {
+    const result = { status: 'rejected', reason: 'unknown-gift', visualOnly: true, eventId: input.eventId, giftId: input.giftId, giftName: sanitizeDisplayName(input.giftName, 'Presente', 48) };
+    publish('gift:rejected', result);
+    telemetry.timing('gift_processing_latency', performance.now() - started, { 'gift.id': input.giftId || '', result: 'unknown-gift' });
+    return result;
+  }
+  telemetry.event('gift.mapping.resolve', { 'gift.id': mapping.giftId, 'power.id': mapping.powerId, 'target.mode': mapping.targetMode, 'round.id': state.roundId });
+  if (!mapping.enabled) {
+    const result = { status: 'rejected', reason: 'mapping-disabled', visualOnly: true, eventId: input.eventId, giftId: mapping.giftId };
+    publish('gift:rejected', result);
+    return result;
+  }
+  let result;
+  if (giftMappings.isLegacyDefault(mapping)) {
+    result = applyGiftEffect({ ...input, giftId: mapping.giftId, giftName: input.giftName || mapping.giftName });
+  } else {
+    result = powerExecutor.execute({ ...input, giftId: mapping.giftId, giftName: input.giftName || mapping.giftName, mapping });
+  }
+  telemetry.timing('gift_processing_latency', performance.now() - started, { 'gift.id': mapping.giftId, 'power.id': mapping.powerId, 'target.mode': mapping.targetMode, 'round.id': state.roundId, result: result?.status || 'unknown' });
+  return result;
 }
 
 function gift(event) {
@@ -64,7 +132,7 @@ function gift(event) {
     return;
   }
   const e = parsed.event;
-  applyGiftEffect({ eventId: e.eventId, senderUserId: e.senderUserId, senderUsername: e.senderUsername, targetUserId: e.targetUserId, giftId: e.giftId, giftName: e.giftName, repeatCount: e.repeatCount, source: 'tiktok' });
+  processMappedGift({ eventId: e.eventId, senderUserId: e.senderUserId, senderUsername: e.senderUsername, targetUserId: e.targetUserId, giftId: e.giftId, giftName: e.giftName, repeatCount: e.repeatCount, source: 'tiktok' });
 }
 
 if (!cfg.mock) {
@@ -112,24 +180,50 @@ app.post('/api/battle/end', admin('battle-end'), (_req, res) => {
   if (!['countdown', 'running', 'paused'].includes(state.phase)) return conflict(res, 'battle-not-active');
   const winner = finish({ intermissionMs: cfg.intermissionMs }); emit('battle-end', { winner }); ok(res);
 });
-app.post('/api/battle/reset', admin('battle-reset'), (_req, res) => { reset(); emit('reset'); ok(res); });
+app.post('/api/battle/reset', admin('battle-reset'), (_req, res) => { reset(); comboManager.reset(); rivalryManager.endAll('admin-reset'); liveInteractions.reset(); emit('reset'); ok(res); });
 app.post('/api/test/players', admin('test-players'), (req, res) => { if (!cfg.mock) return res.status(403).json({ ok: false, error: 'test-mode-disabled' }); addBots(req.body.names || []); emit('players'); ok(res); });
 app.post('/api/storm', admin('storm'), (req, res) => {
   setStorm(req.body.value); emit('storm', { value: state.storm });
   if (state.storm >= 60) narrator.local(`Tempestade em ${state.storm} por cento.`, { priority: 2, emotion: 'urgent', eventType: 'storm' });
   ok(res);
 });
-app.post('/api/settings', admin('settings'), (req, res) => { updateSettings(req.body); emit('settings'); ok(res); });
+app.post('/api/settings', admin('settings'), (req, res) => {
+  updateSettings(req.body);
+  if (['BAIXA', 'NORMAL', 'ALTA'].includes(String(req.body.effectIntensity || '').toUpperCase())) state.settings.effectIntensity = String(req.body.effectIntensity).toUpperCase();
+  narratorDirector.setConfig(req.body);
+  emit('settings'); ok(res);
+});
+
+app.get('/api/admin/gift-mappings', admin('gift-mappings-read'), (_req, res) => res.json({ ok: true, mappings: giftMappings.list(), powers: powerRegistry.publicCatalog(), persistence: giftMappings.status() }));
+app.post('/api/admin/gift-mappings', admin('gift-mappings-write'), async (req, res) => {
+  try {
+    const saved = await giftMappings.save(req.body || {});
+    adminLog({ action: 'save-gift-mapping', giftId: saved.mapping.giftId, powerId: saved.mapping.powerId, source: 'control-panel' });
+    publish('gift-mapping:updated', { mapping: saved.mapping, persisted: saved.persisted });
+    res.json({ ok: true, ...saved });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: String(error?.message || 'invalid-mapping').slice(0, 100) });
+  }
+});
+app.post('/api/admin/gift-mappings/:giftId/disable', admin('gift-mappings-write'), async (req, res) => {
+  try {
+    const saved = await giftMappings.disable(req.params.giftId);
+    publish('gift-mapping:updated', { mapping: saved.mapping, persisted: saved.persisted });
+    res.json({ ok: true, ...saved });
+  } catch (error) {
+    res.status(404).json({ ok: false, error: String(error?.message || 'mapping-not-found').slice(0, 100) });
+  }
+});
 
 app.post('/api/admin/gift', admin('gift'), (req, res) => {
   if (!cfg.mock) return res.status(403).json({ ok: false, error: 'test-mode-disabled' });
-  const giftDef = resolveGiftDefinition(req.body.giftId, '');
+  const mapping = giftMappings.resolve(req.body.giftId, req.body.giftName || '');
   const target = state.players.find((p) => p.id === String(req.body.targetPlayerId || '') && p.alive);
-  if (!giftDef) return res.status(400).json({ ok: false, error: 'gift-not-allowlisted' });
+  if (!mapping) return res.status(400).json({ ok: false, error: 'gift-not-mapped' });
   if (!target) return res.status(400).json({ ok: false, error: 'invalid-target-player' });
-  adminLog({ action: 'simulate-gift', giftId: giftDef.giftId, targetPlayerId: target.id, source: 'control-panel' });
-  const result = applyGiftEffect({ eventId: `admin:${randomUUID()}`, senderUserId: 'admin-simulator', senderUsername: 'SIMULAÇÃO', targetUserId: target.id, giftId: giftDef.giftId, giftName: giftDef.aliases[0], repeatCount: 1, source: 'control-panel' });
-  res.json({ ok: result.status === 'applied', result, state: publicState() });
+  adminLog({ action: 'simulate-gift', giftId: mapping.giftId, powerId: mapping.powerId, targetPlayerId: target.id, source: 'control-panel' });
+  const result = processMappedGift({ eventId: `admin:${randomUUID()}`, senderUserId: 'admin-simulator', senderUsername: 'SIMULAÇÃO', targetUserId: target.id, giftId: mapping.giftId, giftName: mapping.giftName, repeatCount: 1, source: 'control-panel' });
+  res.status(result.status === 'applied' ? 200 : 409).json({ ok: result.status === 'applied', result, state: publicState() });
 });
 app.post('/api/admin/boss', admin('boss'), (req, res) => {
   if (!cfg.mock) return res.status(403).json({ ok: false, error: 'test-mode-disabled' });
@@ -140,9 +234,9 @@ app.post('/api/admin/boss', admin('boss'), (req, res) => {
 app.post('/api/mock/gift', (_req, res) => res.status(410).json({ ok: false, error: 'use-admin-gift-simulator' }));
 app.post('/api/mock/comment', admin('mock-comment'), (req, res) => { if (!cfg.mock) return res.status(403).json({ ok: false, error: 'test-mode-disabled' }); chat({ ...req.body, user: { userId: req.body.user?.userId || 'mock-user', uniqueId: req.body.user?.uniqueId || req.body.username || 'mock' } }); ok(res); });
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'startrades-neon-royale', uptimeSeconds: Math.floor(process.uptime()) }));
+app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'startrades-neon-royale', uptimeSeconds: Math.floor(process.uptime()), mappings: giftMappings.status(), telemetry: telemetry.status() }));
 app.get('/api/leaderboard', (_req, res) => res.json({ ok: true, kings: getLeaderboard().slice(0, 3) }));
-app.get('/api/config', (_req, res) => res.json({ username: cfg.username, mock: cfg.mock, model: cfg.model, adminConfigured: Boolean(cfg.adminToken), countdownMs: cfg.countdownMs, intermissionMs: cfg.intermissionMs, giftCatalog: state.giftCatalog }));
+app.get('/api/config', (_req, res) => res.json({ username: cfg.username, mock: cfg.mock, model: cfg.model, adminConfigured: Boolean(cfg.adminToken), countdownMs: cfg.countdownMs, intermissionMs: cfg.intermissionMs, giftCatalog: state.giftCatalog, powerCatalog: powerRegistry.publicCatalog(), effectIntensity: state.settings.effectIntensity }));
 
 function autoFinish() {
   const alive = state.players.filter((p) => p.alive), joinedTeams = new Set(state.players.map((p) => p.team)), aliveTeams = new Set(alive.map((p) => p.team));
@@ -152,7 +246,21 @@ function autoFinish() {
   }
 }
 let lastStateBroadcastAt = 0;
-setInterval(() => { const now = Date.now(); tickGame(now); autoFinish(); if (['countdown', 'running', 'ended'].includes(state.phase) && now - lastStateBroadcastAt >= 500) { lastStateBroadcastAt = now; emit('tick'); } }, 250).unref?.();
+let lastMetricsAt = 0;
+setInterval(() => {
+  const now = Date.now();
+  tickGame(now);
+  const bossStarted = performance.now();
+  bossDirector.tick(now);
+  telemetry.timing('boss_tick_duration', performance.now() - bossStarted, { 'boss.phase': state.boss?.phase || 0, 'round.id': state.roundId });
+  autoFinish();
+  if (now - lastMetricsAt >= 10_000) {
+    lastMetricsAt = now;
+    telemetry.gauge('active_players', state.players.filter((player) => player.alive).length, { 'round.id': state.roundId });
+    telemetry.gauge('active_connections', wss.clients.size, { 'round.id': state.roundId });
+  }
+  if (['countdown', 'running', 'ended'].includes(state.phase) && now - lastStateBroadcastAt >= 500) { lastStateBroadcastAt = now; emit('tick'); }
+}, 250).unref?.();
 setInterval(() => { tickStorm(); if (state.phase === 'running') emit('tick'); }, 7000).unref?.();
 
 let shuttingDown = false;
@@ -160,7 +268,13 @@ function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[shutdown] ${signal}`);
+  giftCinematicDirector.dispose();
+  narratorDirector.dispose();
   narrator.dispose();
+  powerExecutor.dispose();
+  comboManager.reset();
+  rivalryManager.endAll('shutdown');
+  liveInteractions.reset();
   const forceExit = setTimeout(() => process.exit(1), 15_000);
   forceExit.unref?.();
   for (const client of wss.clients) client.close(1001, 'server-shutdown');

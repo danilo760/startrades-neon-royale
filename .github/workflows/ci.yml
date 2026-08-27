@@ -4,30 +4,58 @@ on:
   push:
     branches: [main, codex/neon-royale]
 jobs:
-  build:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - run: npm ci
-      - run: RUN_INTEGRATION_TESTS=true npm run check
-      - name: Smoke test production server
+
+      - name: Passagem 1 — arquitetura, testes, integração e segurança
+        run: RUN_INTEGRATION_TESTS=true npm run check
+      - name: npm audit
+        run: npm audit --audit-level=high
+
+      - name: Passagem 2 — produção HTTP e WebSocket
         env:
           ADMIN_TOKEN: ci-smoke-admin-token
+          MOCK_MODE: 'true'
+          BATTLE_COUNTDOWN_MS: '0'
+          SUPABASE_URL: ''
+          SUPABASE_SECRET_KEY: ''
+          OTEL_EXPORTER_OTLP_ENDPOINT: ''
         run: |
-          MOCK_MODE=true npm start > /tmp/startrades-server.log 2>&1 &
+          npm run build
+          npm start > /tmp/startrades-server.log 2>&1 &
           SERVER_PID=$!
-          for attempt in {1..20}; do
-            if curl --fail --silent http://127.0.0.1:4173/api/health; then
-              kill $SERVER_PID
-              wait $SERVER_PID || true
-              exit 0
-            fi
+          cleanup() { kill $SERVER_PID 2>/dev/null || true; wait $SERVER_PID 2>/dev/null || true; }
+          trap cleanup EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:4173/api/health >/tmp/health.json; then break; fi
             sleep 1
           done
-          cat /tmp/startrades-server.log
-          kill $SERVER_PID || true
-          wait $SERVER_PID || true
-          exit 1
+          curl --fail --silent http://127.0.0.1:4173/ >/dev/null
+          curl --fail --silent http://127.0.0.1:4173/control >/dev/null
+          curl --fail --silent http://127.0.0.1:4173/api/health >/dev/null
+          curl --fail --silent http://127.0.0.1:4173/api/config >/dev/null
+          curl --fail --silent http://127.0.0.1:4173/api/leaderboard >/dev/null
+          node --input-type=module <<'NODE'
+          import { WebSocket } from 'ws';
+          const ws = new WebSocket('ws://127.0.0.1:4173/events');
+          const timeout = setTimeout(() => { console.error('websocket timeout'); process.exit(1); }, 4000);
+          ws.once('message', (raw) => {
+            const event = JSON.parse(String(raw));
+            if (event.type !== 'state' || !event.state) process.exit(1);
+            clearTimeout(timeout);
+            ws.close();
+          });
+          ws.once('error', (error) => { console.error(error); process.exit(1); });
+          ws.once('close', () => process.exit(0));
+          NODE
+          cat /tmp/health.json
+
+      - name: Passagem 3 — repetir suíte final completa
+        run: RUN_INTEGRATION_TESTS=true npm run check

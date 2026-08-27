@@ -19,14 +19,19 @@ async function request(base, path, token, body = {}) {
   const data = await response.json().catch(() => ({}));
   return { response, data };
 }
+async function get(base, path, token = '') {
+  const response = await fetch(`${base}${path}`, { headers: token ? { authorization: `Bearer ${token}` } : {} });
+  const data = await response.json().catch(() => ({}));
+  return { response, data };
+}
 
-test('HTTP/WebSocket simulation covers admin auth, lifecycle guards, gift, boss, narrator fallback and full round', { skip: !integrationEnabled, timeout: 20_000 }, async () => {
+test('HTTP/WebSocket simulation covers auth, hot gift mapping, lifecycle, boss, narrator fallback and full round', { skip: !integrationEnabled, timeout: 20_000 }, async () => {
   const port = 4300 + Math.floor(Math.random() * 300);
   const token = 'integration-admin-token';
   const base = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ['server/index.js'], {
     cwd: process.cwd(),
-    env: { ...process.env, PORT: String(port), MOCK_MODE: 'true', ADMIN_TOKEN: token, BATTLE_COUNTDOWN_MS: '0', BATTLE_INTERMISSION_MS: '100', OLLAMA_URL: 'http://127.0.0.1:9', SUPABASE_URL: '', SUPABASE_SECRET_KEY: '' },
+    env: { ...process.env, PORT: String(port), MOCK_MODE: 'true', ADMIN_TOKEN: token, BATTLE_COUNTDOWN_MS: '0', BATTLE_INTERMISSION_MS: '100', OLLAMA_URL: 'http://127.0.0.1:9', SUPABASE_URL: '', SUPABASE_SECRET_KEY: '', OTEL_EXPORTER_OTLP_ENDPOINT: '' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let logs = '';
@@ -34,7 +39,7 @@ test('HTTP/WebSocket simulation covers admin auth, lifecycle guards, gift, boss,
   let socket;
   try {
     const config = await waitForServer(`${base}/api/config`, child);
-    assert.equal(config.mock, true); assert.equal(config.adminConfigured, true); assert.ok(Array.isArray(config.giftCatalog));
+    assert.equal(config.mock, true); assert.equal(config.adminConfigured, true); assert.ok(Array.isArray(config.giftCatalog)); assert.ok(config.powerCatalog.some((power) => power.id === 'supernova'));
 
     const { WebSocket } = await import('ws');
     const events = [];
@@ -44,12 +49,14 @@ test('HTTP/WebSocket simulation covers admin auth, lifecycle guards, gift, boss,
 
     let result = await request(base, '/api/admin/gift', '', { targetPlayerId: 'x', giftId: '5655' });
     assert.equal(result.response.status, 401);
+    let mappingRead = await get(base, '/api/admin/gift-mappings', '');
+    assert.equal(mappingRead.response.status, 401);
 
     result = await request(base, '/api/battle/pause', token);
     assert.equal(result.response.status, 409); assert.equal(result.data.error, 'battle-not-pausable');
 
-    result = await request(base, '/api/test/players', token, { names: ['Nebula', 'CyberFox'] });
-    assert.equal(result.response.status, 200); assert.equal(result.data.state.players.length, 2);
+    result = await request(base, '/api/test/players', token, { names: ['Nebula', 'CyberFox', 'Nova'] });
+    assert.equal(result.response.status, 200); assert.equal(result.data.state.players.length, 3);
     const targetPlayerId = result.data.state.players[0].id;
 
     result = await request(base, '/api/battle/start', token);
@@ -58,8 +65,18 @@ test('HTTP/WebSocket simulation covers admin auth, lifecycle guards, gift, boss,
     result = await request(base, '/api/battle/start', token);
     assert.equal(result.response.status, 409); assert.equal(result.data.error, 'battle-not-in-lobby');
 
-    result = await request(base, '/api/admin/gift', token, { targetPlayerId, giftId: '5655', magnitude: 9999, durationMs: 999999, diamondCount: 999999 });
-    assert.equal(result.response.status, 200); assert.equal(result.data.result.source, 'control-panel'); assert.equal(result.data.result.giftId, '5655');
+    mappingRead = await get(base, '/api/admin/gift-mappings', token);
+    assert.equal(mappingRead.response.status, 200); assert.ok(mappingRead.data.mappings.some((mapping) => mapping.giftId === '5655'));
+
+    result = await request(base, '/api/admin/gift-mappings', token, { giftId: '5655', giftName: 'Rose', enabled: true, powerId: 'tactical-shield', targetMode: 'SELF', magnitude: 999999, durationMs: 999999, cooldownMs: 0, visualPreset: 'shield-burst', soundPreset: 'shield', narrationPreset: 'hype' });
+    assert.equal(result.response.status, 200); assert.equal(result.data.mapping.powerId, 'tactical-shield'); assert.ok(result.data.mapping.magnitude <= 20); assert.ok(result.data.mapping.durationMs <= 5000);
+    result = await request(base, '/api/admin/gift', token, { targetPlayerId, giftId: '5655' });
+    assert.equal(result.response.status, 200); assert.equal(result.data.result.powerId, 'tactical-shield');
+
+    result = await request(base, '/api/admin/gift-mappings', token, { ...mappingRead.data.mappings.find((mapping) => mapping.giftId === '5655'), giftId: '5655', giftName: 'Rose', enabled: true, powerId: 'chain-lightning', targetMode: 'ENEMY', magnitude: 12, durationMs: 700, cooldownMs: 0, visualPreset: 'chain-lightning', soundPreset: 'lightning', narrationPreset: 'hype' });
+    assert.equal(result.response.status, 200); assert.equal(result.data.mapping.powerId, 'chain-lightning');
+    result = await request(base, '/api/admin/gift', token, { targetPlayerId, giftId: '5655' });
+    assert.equal(result.response.status, 200); assert.equal(result.data.result.powerId, 'chain-lightning');
 
     result = await request(base, '/api/admin/boss', token);
     assert.equal(result.response.status, 200); assert.equal(result.data.state.boss.active, true);
@@ -75,12 +92,14 @@ test('HTTP/WebSocket simulation covers admin auth, lifecycle guards, gift, boss,
     const deadline = Date.now() + 4000;
     while (Date.now() < deadline && (
       !events.some((e) => e.type === 'gift:applied') ||
+      !events.some((e) => e.type === 'power:executed' && e.payload?.powerId === 'chain-lightning') ||
       !events.some((e) => e.type === 'boss:spawned') ||
       !events.some((e) => e.type === 'battle-end') ||
       !events.some((e) => e.type === 'round:lobby' && e.state?.phase === 'lobby') ||
       !events.some((e) => e.type === 'agent' && e.payload?.fallback)
     )) await sleep(50);
     assert.ok(events.some((e) => e.type === 'gift:applied'));
+    assert.ok(events.some((e) => e.type === 'power:executed' && e.payload?.powerId === 'chain-lightning'));
     assert.ok(events.some((e) => e.type === 'boss:spawned'));
     assert.ok(events.some((e) => e.type === 'battle-end'));
     assert.ok(events.some((e) => e.type === 'round:lobby' && e.state?.phase === 'lobby'));
