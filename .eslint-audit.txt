@@ -1,0 +1,51 @@
+
+> startrades-battle-live@1.0.0 lint
+> eslint .
+
+
+/home/runner/work/startrades-neon-royale/startrades-neon-royale/qa/chaos-bot.js
+  5:35  error  'finish' is defined but never used. Allowed unused vars must match /^_/u  no-unused-vars
+
+/home/runner/work/startrades-neon-royale/startrades-neon-royale/qa/e2e/panel.spec.js
+  34:33  error  'MouseEvent' is not defined  no-undef
+
+/home/runner/work/startrades-neon-royale/startrades-neon-royale/qa/e2e/performance.spec.js
+  20:59  error  'window' is not defined  no-undef
+  21:49  error  'window' is not defined  no-undef
+
+/home/runner/work/startrades-neon-royale/startrades-neon-royale/qa/e2e/vertical.spec.js
+  21:19  error  'document' is not defined  no-undef
+  29:23  error  'document' is not defined  no-undef
+  30:23  error  'document' is not defined  no-undef
+  31:20  error  'document' is not defined  no-undef
+
+/home/runner/work/startrades-neon-royale/startrades-neon-royale/qa/e2e/visual-regression.spec.js
+  22:26  error  'innerWidth' is not defined   no-undef
+  22:46  error  'innerHeight' is not defined  no-undef
+  23:22  error  'document' is not defined     no-undef
+  24:21  error  'document' is not defined     no-undef
+  25:18  error  'document' is not defined     no-undef
+  26:20  error  'document' is not defined     no-undef
+
+/home/runner/work/startrades-neon-royale/startrades-neon-royale/server/integration.test.js
+   10:24  error  Expected '!==' and instead saw '!='  eqeqeq
+  115:24  error  Expected '===' and instead saw '=='  eqeqeq
+
+/home/runner/work/startrades-neon-royale/startrades-neon-royale/server/replay.js
+  23:13  error  Expected '===' and instead saw '=='  eqeqeq
+
+/home/runner/work/startrades-neon-royale/startrades-neon-royale/server/telemetry.js
+  28:18  error  Expected '!==' and instead saw '!='  eqeqeq
+
+/home/runner/work/startrades-neon-royale/startrades-neon-royale/src/game/ArenaVisuals.js
+  1:8  error  'Phaser' is defined but never used. Allowed unused vars must match /^_/u  no-unused-vars
+
+/home/runner/work/startrades-neon-royale/startrades-neon-royale/src/main.jsx
+  63:77  error  Expected '!==' and instead saw '!='  eqeqeq
+
+/home/runner/work/startrades-neon-royale/startrades-neon-royale/src/overlay/Overlay.jsx
+  144:38   warning  The ref value 'killTimers.current' will likely have changed by the time this effect cleanup function runs. If this ref points to a node rendered by React, copy 'killTimers.current' to a variable inside the effect, and use that variable in the cleanup function  react-hooks/exhaustive-deps
+  211:279  error    Expected '!==' and instead saw '!='                                                                                                                                                                                                                                  eqeqeq
+
+✖ 22 problems (21 errors, 1 warning)
+
