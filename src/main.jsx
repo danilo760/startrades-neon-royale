@@ -4,6 +4,7 @@ import './styles.css';
 import './cinematic.css';
 import './vertical.css';
 import './performance.css';
+import './qa-lab.css';
 
 const NativeWebSocket = window.WebSocket;
 const WS_HEARTBEAT_MS = 4 * 60 * 1000;
@@ -30,6 +31,7 @@ if (!localStorage.getItem('neon-effect-mode')) localStorage.setItem('neon-effect
 
 const Overlay = lazy(() => import('./overlay/Overlay.jsx').then((module) => ({ default: module.Overlay })));
 const Control = lazy(() => import('./control/Control.jsx').then((module) => ({ default: module.Control })));
+const QALab = lazy(() => import('./control/QALab.jsx').then((module) => ({ default: module.QALab })));
 
 function BroadcastModeToolbar() {
   const [effects, setEffects] = useState(() => localStorage.getItem('neon-effect-mode') || 'AUTO');
@@ -65,6 +67,6 @@ function PerformanceDiagnostics() {
 const isControl = location.pathname.startsWith('/control');
 createRoot(document.getElementById('root')).render(
   <Suspense fallback={<div>Loading...</div>}>
-    {isControl ? <><BroadcastModeToolbar/><Control /></> : <><Overlay/><PerformanceDiagnostics/></>}
+    {isControl ? <><BroadcastModeToolbar/><Control/><QALab/></> : <><Overlay/><PerformanceDiagnostics/></>}
   </Suspense>
 );
