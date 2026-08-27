@@ -7,8 +7,14 @@
     "dev": "concurrently -k \"node --watch server/index.js\" \"vite --host 0.0.0.0\"",
     "build": "vite build",
     "start": "node server/index.js",
-    "test": "node --test server/*.test.js",
-    "check": "node --check server/index.js && node --check server/engine.js && node --check server/gifts.js && node --check server/admin.js && node --check server/leaderboard.js && npm test && vite build"
+    "test": "node --test server/*.test.js qa/gameplay-bot.test.js qa/chaos-bot.test.js",
+    "test:gameplay": "node qa/gameplay-bot.js --rounds=1",
+    "test:gameplay:10": "node qa/gameplay-bot.js --rounds=10",
+    "test:gameplay:100": "node qa/gameplay-bot.js --rounds=100",
+    "test:gameplay:1000": "node qa/gameplay-bot.js --rounds=1000",
+    "test:panel": "playwright test",
+    "test:chaos": "NODE_ENV=test MOCK_MODE=true QA_CHAOS_ACK=I_UNDERSTAND_LOCAL_ONLY node qa/chaos-bot.js --i-understand-chaos",
+    "check": "node --check server/index.js && node --check server/engine.js && node --check server/gifts.js && node --check server/admin.js && node --check server/leaderboard.js && node --check qa/gameplay-bot.js && node --check qa/chaos-bot.js && npm test && vite build"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.57.4",
@@ -22,5 +28,8 @@
     "tiktok-live-api": "^1.4.9",
     "vite": "^7.1.3",
     "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0"
   }
 }
