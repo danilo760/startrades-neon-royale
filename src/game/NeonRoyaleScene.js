@@ -1,8 +1,8 @@
-import { GameScene } from './GameScene.js';
+import { GameScene as BaseGameScene } from './GameScene.js';
 import { applyArenaVisuals, createArenaVisuals, destroyArenaVisuals, drawArenaStorm } from './ArenaVisuals.js';
 import { decorateCombatant, updateCombatantVisuals } from './CombatantVisuals.js';
 
-export class NeonRoyaleScene extends GameScene {
+export class GameScene extends BaseGameScene {
   drawArena() { createArenaVisuals(this); }
 
   applyArenaTheme(name = 'default') { applyArenaVisuals(this, name); }
@@ -25,3 +25,5 @@ export class NeonRoyaleScene extends GameScene {
     super.cleanupScene();
   }
 }
+
+export const NeonRoyaleScene = GameScene;
