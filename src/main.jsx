@@ -27,7 +27,6 @@ class NeonWebSocket extends NativeWebSocket {
   }
 }
 window.WebSocket = NeonWebSocket;
-if (!localStorage.getItem('neon-effect-mode')) localStorage.setItem('neon-effect-mode', 'AUTO');
 
 const Overlay = lazy(() => import('./overlay/Overlay.jsx').then((module) => ({ default: module.Overlay })));
 const Control = lazy(() => import('./control/Control.jsx').then((module) => ({ default: module.Control })));
