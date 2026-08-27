@@ -60,7 +60,7 @@ function PerformanceDiagnostics() {
     <span>FPS <b>{diagnostics?.fps ?? '—'}</b></span><span>FRAME <b>{diagnostics?.frameTimeMs ?? '—'} ms</b></span>
     <span>QUALITY <b>{diagnostics?.effectiveLevel ?? '—'}</b></span><span>MODE <b>{diagnostics?.requestedMode ?? '—'}</b></span>
     <span>PLAYERS <b>{diagnostics?.players ?? '—'}</b></span><span>PROJECTILES <b>{diagnostics?.projectiles ?? '—'}</b></span>
-    <span>VFX <b>{diagnostics?.vfx ?? '—'}</b></span>{diagnostics?.memoryMb != null && <span>MEM <b>{diagnostics.memoryMb} MB</b></span>}
+    <span>VFX <b>{diagnostics?.vfx ?? '—'}</b></span>{diagnostics?.memoryMb !== null && diagnostics?.memoryMb !== undefined && <span>MEM <b>{diagnostics.memoryMb} MB</b></span>}
   </aside>;
 }
 

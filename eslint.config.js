@@ -32,6 +32,12 @@ export default [
     rules: baseRules,
   },
   {
+    files: ['qa/e2e/**/*.spec.js'],
+    languageOptions: {
+      globals: { ...globals.node, ...globals.browser },
+    },
+  },
+  {
     files: ['src/**/*.{js,jsx}'],
     plugins: {
       react,

@@ -1,4 +1,3 @@
-import Phaser from 'phaser';
 import { arenaPresetFor, requestedVisualMode, visualQualityFor } from './visualPresets.js';
 
 const inside = (scene, object) => { scene.arenaDecor.add(object); return object; };

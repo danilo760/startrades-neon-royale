@@ -171,7 +171,7 @@ function startTikTok() {
 const ok = (res) => res.json({ ok: true, state: publicState() });
 const conflict = (res, error) => res.status(409).json({ ok: false, error, state: publicState() });
 const admin = (action) => (req, res, next) => {
-  const result = authorizeAdminRequest({ headers: req.headers, ip: req.ip, token: cfg.adminToken, action });
+  const result = authorizeAdminRequest({ headers: req.headers, ip: req.ip, token: cfg.adminToken, action, mockMode: cfg.mock });
   if (!result.ok) return res.status(result.status).json({ ok: false, error: result.reason });
   next();
 };

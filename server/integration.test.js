@@ -7,7 +7,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function waitForServer(url, child) {
   for (let i = 0; i < 60; i++) {
-    if (child.exitCode != null) throw new Error(`server exited with ${child.exitCode}`);
+    if (child.exitCode !== null) throw new Error(`server exited with ${child.exitCode}`);
     try { const response = await fetch(url); if (response.ok) return response.json(); } catch {}
     await sleep(100);
   }
@@ -112,6 +112,6 @@ test('HTTP/WebSocket simulation covers auth, hot gift mapping, lifecycle, boss, 
   } finally {
     socket?.close(); child.kill('SIGTERM');
     await Promise.race([new Promise((resolve) => child.once('exit', resolve)), sleep(1500)]);
-    if (child.exitCode == null) child.kill('SIGKILL');
+    if (child.exitCode === null) child.kill('SIGKILL');
   }
 });

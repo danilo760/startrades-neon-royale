@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 import { WebSocket } from 'ws';
 import { GiftEventLedger, normalizeGiftEvent } from '../server/gifts.js';
-import { __test, applyGiftEffect, finish, join, pause, reset, setStorm, spawnBoss, start, state, tickGame } from '../server/engine.js';
+import { __test, applyGiftEffect, join, pause, reset, setStorm, spawnBoss, start, state, tickGame } from '../server/engine.js';
 import { initializeLeaderboard } from '../server/leaderboard.js';
 import { assertValidState } from './invariants.js';
 

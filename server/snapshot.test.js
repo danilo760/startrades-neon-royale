@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { __test, finish, join, reset, setStorm, spawnBoss, start, state } from './engine.js';
+import { __test, applyGiftEffect, finish, join, reset, setStorm, spawnBoss, start, state } from './engine.js';
 import { captureGameSnapshot, restoreGameSnapshot, snapshotInternals, validateSnapshotEnvelope } from './snapshot.js';
 
 const makeExecutor = () => ({
-  seen: new Map(), cooldowns: new Map(), globalCooldowns: new Map(),
+  seen: new Map(), cooldowns: new Map(), globalCooldowns: new Map(), cancelPendingCalls: 0,
+  cancelPending() { this.cancelPendingCalls += 1; return 0; },
   prune(now) {
     for (const map of [this.seen, this.cooldowns, this.globalCooldowns]) for (const [key, expiresAt] of map) if (expiresAt <= now) map.delete(key);
   },
@@ -23,6 +24,8 @@ test('restart-safe snapshot restores running battle, boss, storm and power coold
   setStorm(72);
   const boss = spawnBoss({ source: 'test', now: BASE + 1500 });
   assert.equal(boss.applied, true);
+  const legacyGiftInput = { eventId: 'legacy-before-restart', senderUserId: a.id, senderUsername: a.username, targetUserId: a.id, giftId: '5655', giftName: 'Rose', repeatCount: 1 };
+  assert.equal(applyGiftEffect({ ...legacyGiftInput, now: BASE + 1800 }).status, 'applied');
   const executor = makeExecutor();
   executor.seen.set('evt:1', BASE + 30_000);
   executor.cooldowns.set('snapshot:a:speed', BASE + 25_000);
@@ -43,6 +46,8 @@ test('restart-safe snapshot restores running battle, boss, storm and power coold
   assert.equal(executor.seen.get('evt:1'), BASE + 30_000);
   assert.equal(executor.cooldowns.get('snapshot:a:speed'), BASE + 25_000);
   assert.equal(executor.globalCooldowns.get('meteor'), BASE + 20_000);
+  assert.equal(executor.cancelPendingCalls, 1);
+  assert.equal(applyGiftEffect({ ...legacyGiftInput, now: BASE + 2300 }).reason, 'duplicate-event');
 });
 
 test('restart-safe snapshot restores countdown', () => {
@@ -78,11 +83,36 @@ test('restart-safe snapshot restores intermission state without fabricating a ne
   assert.equal(state.winner?.id, a.id);
 });
 
+test('snapshot payload is secret-safe, byte-bounded and envelope-consistent', () => {
+  const previousAdminToken = process.env.ADMIN_TOKEN;
+  process.env.ADMIN_TOKEN = 'snapshot-admin-secret-xyz';
+  try {
+    reset({ now: BASE });
+    join('Secret-Safe', null, true, { platformUserId: 'secret-safe' });
+    state.settings.adminToken = process.env.ADMIN_TOKEN;
+    state.feed.unshift({ id: 'secret-feed', text: `token=${process.env.ADMIN_TOKEN}`, tone: 'info', at: BASE });
+    const snapshot = captureGameSnapshot({ now: BASE + 100, reason: 'security-check' });
+    const serialized = JSON.stringify(snapshot.payload);
+    assert.equal(serialized.includes(process.env.ADMIN_TOKEN), false);
+    assert.equal(Object.hasOwn(snapshot.payload.settings, 'adminToken'), false);
+    assert.ok(Buffer.byteLength(serialized, 'utf8') <= snapshotInternals.MAX_SNAPSHOT_PAYLOAD_BYTES);
+    assert.equal(validateSnapshotEnvelope({ ...snapshot, roundId: 'other-round' }, { now: BASE + 200 }).reason, 'snapshot-round-mismatch');
+    assert.equal(validateSnapshotEnvelope({ ...snapshot, phase: 'running' }, { now: BASE + 200 }).reason, 'snapshot-phase-mismatch');
+    const oversized = { ...snapshot, payload: { ...snapshot.payload, padding: 'x'.repeat(snapshotInternals.MAX_SNAPSHOT_PAYLOAD_BYTES) } };
+    assert.equal(validateSnapshotEnvelope(oversized, { now: BASE + 200 }).reason, 'snapshot-payload-too-large');
+  } finally {
+    delete state.settings.adminToken;
+    if (previousAdminToken === undefined) delete process.env.ADMIN_TOKEN;
+    else process.env.ADMIN_TOKEN = previousAdminToken;
+  }
+});
+
 test('expired, corrupt and unsupported snapshots fail closed to restore', () => {
   reset({ now: BASE });
   join('Safe-A', null, true, { platformUserId: 'safe:a' });
   const snapshot = captureGameSnapshot({ now: BASE, reason: 'validation' });
   assert.equal(validateSnapshotEnvelope(snapshot, { now: BASE + 1000 }).ok, true);
+  assert.equal(validateSnapshotEnvelope({ ...snapshot, snapshotVersion: 1 }, { now: BASE + 1000 }).reason, 'snapshot-version-unsupported');
   assert.equal(validateSnapshotEnvelope({ ...snapshot, snapshotVersion: 999 }, { now: BASE + 1000 }).reason, 'snapshot-version-unsupported');
   assert.equal(validateSnapshotEnvelope({ ...snapshot, payload: null }, { now: BASE + 1000 }).reason, 'snapshot-payload-invalid');
   assert.equal(validateSnapshotEnvelope(snapshot, { now: BASE + snapshotInternals.TTL_MS + 1 }).reason, 'snapshot-expired');

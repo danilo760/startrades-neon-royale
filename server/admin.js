@@ -16,9 +16,11 @@ const secureEqual = (a, b) => {
   return aa.length === bb.length && aa.length > 0 && timingSafeEqual(aa, bb);
 };
 
-export function authorizeAdminRequest({ headers = {}, ip = 'unknown', token = process.env.ADMIN_TOKEN || '', now = Date.now(), action = 'admin' } = {}) {
+export function authorizeAdminRequest({ headers = {}, ip = 'unknown', token = process.env.ADMIN_TOKEN || '', now = Date.now(), action = 'admin', mockMode = true } = {}) {
   if (!token) return { ok: false, status: 503, reason: 'admin-token-not-configured' };
   if (!secureEqual(extractToken(headers), token)) return { ok: false, status: 401, reason: 'unauthorized' };
+  const qaLabRequest = String(headers['x-neon-qa-lab'] || headers['X-Neon-QA-Lab'] || '') === '1';
+  if (qaLabRequest && !mockMode) return { ok: false, status: 403, reason: 'qa-lab-disabled' };
   const key = `${sanitizeStableId(ip) || 'unknown'}:${sanitizeStableId(action) || 'admin'}`;
   const previous = buckets.get(key);
   const bucket = !previous || now - previous.windowStartedAt >= WINDOW_MS ? { windowStartedAt: now, count: 0, lastAt: 0 } : previous;

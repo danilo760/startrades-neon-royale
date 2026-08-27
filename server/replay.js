@@ -20,7 +20,7 @@ const cleanString = (value, max = MAX_STRING) => String(value ?? '')
 
 function safeValue(value, key = '', depth = 0) {
   if (FORBIDDEN_KEY.test(key) || depth > 4) return undefined;
-  if (value == null || typeof value === 'boolean') return value;
+  if (value === null || value === undefined || typeof value === 'boolean') return value;
   if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
   if (typeof value === 'bigint') return String(value);
   if (typeof value === 'string') return cleanString(value);
@@ -60,33 +60,79 @@ export function createSeededRandom(seed) {
 export function withDeterministicRuntime(seed, startedAt, fn) {
   const originalRandom = Math.random;
   const originalDateNow = Date.now;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const originalSetInterval = globalThis.setInterval;
+  const originalClearInterval = globalThis.clearInterval;
   const random = createSeededRandom(seed);
   let currentTime = Math.max(0, Math.trunc(Number(startedAt) || 0));
+  let nextTimerId = 1;
+  const timers = new Map();
+
+  const clearTimer = (handle) => {
+    const id = typeof handle === 'object' && handle ? handle.id : Number(handle);
+    if (Number.isFinite(id)) timers.delete(id);
+  };
+  const schedule = (fn, delayMs, intervalMs = 0, args = []) => {
+    const id = nextTimerId++;
+    const delay = Math.max(0, Math.trunc(Number(delayMs) || 0));
+    const interval = intervalMs > 0 ? Math.max(1, Math.trunc(Number(intervalMs) || 1)) : 0;
+    const handle = { id, unref() { return handle; }, ref() { return handle; } };
+    timers.set(id, { id, handle, fn, args, dueAt: currentTime + delay, interval });
+    return handle;
+  };
+  const flushUntil = (targetTime) => {
+    const target = Math.max(0, Math.trunc(Number(targetTime) || 0));
+    let executions = 0;
+    while (true) {
+      const next = [...timers.values()].filter((timer) => timer.dueAt <= target).sort((a, b) => a.dueAt - b.dueAt || a.id - b.id)[0];
+      if (!next) break;
+      if (++executions > 20_000) throw new Error('deterministic-timer-overflow');
+      currentTime = next.dueAt;
+      if (next.interval > 0) next.dueAt += next.interval;
+      else timers.delete(next.id);
+      next.fn(...next.args);
+    }
+    currentTime = target;
+    return currentTime;
+  };
   const runtime = Object.freeze({
     random,
     now: () => currentTime,
-    setNow: (value) => { currentTime = Math.max(0, Math.trunc(Number(value) || currentTime)); return currentTime; },
-    advance: (deltaMs) => { currentTime += Math.max(0, Math.trunc(Number(deltaMs) || 0)); return currentTime; },
+    setNow: (value) => {
+      const target = Math.max(0, Math.trunc(Number(value) || currentTime));
+      if (target >= currentTime) return flushUntil(target);
+      currentTime = target;
+      return currentTime;
+    },
+    advance: (deltaMs) => flushUntil(currentTime + Math.max(0, Math.trunc(Number(deltaMs) || 0))),
+    pendingTimers: () => timers.size,
   });
+
+  const restoreGlobals = () => {
+    Math.random = originalRandom;
+    Date.now = originalDateNow;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    globalThis.setInterval = originalSetInterval;
+    globalThis.clearInterval = originalClearInterval;
+  };
 
   Math.random = random;
   Date.now = () => currentTime;
+  globalThis.setTimeout = (fn, delay, ...args) => schedule(fn, delay, 0, args);
+  globalThis.clearTimeout = clearTimer;
+  globalThis.setInterval = (fn, delay, ...args) => schedule(fn, delay, Math.max(1, Number(delay) || 1), args);
+  globalThis.clearInterval = clearTimer;
   let result;
   try {
     result = fn(runtime);
   } catch (error) {
-    Math.random = originalRandom;
-    Date.now = originalDateNow;
+    restoreGlobals();
     throw error;
   }
-  if (result && typeof result.then === 'function') {
-    return result.finally(() => {
-      Math.random = originalRandom;
-      Date.now = originalDateNow;
-    });
-  }
-  Math.random = originalRandom;
-  Date.now = originalDateNow;
+  if (result && typeof result.then === 'function') return result.finally(restoreGlobals);
+  restoreGlobals();
   return result;
 }
 

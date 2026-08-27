@@ -1,11 +1,12 @@
 import { createClient } from '@supabase/supabase-js';
-import { join, reset, state } from './engine.js';
+import { captureLegacyGiftRuntime, join, reset, restoreLegacyGiftRuntime, state } from './engine.js';
 
-export const SNAPSHOT_VERSION = 1;
+export const SNAPSHOT_VERSION = 2;
 const SNAPSHOT_KEY = 'active';
 const MAX_PLAYERS = 200;
 const MAX_HAZARDS = 24;
 const MAX_FEED = 14;
+const MAX_SNAPSHOT_PAYLOAD_BYTES = 262_144;
 const PHASES = new Set(['lobby', 'countdown', 'running', 'paused', 'ended']);
 const clamp = (value, min, max) => Math.max(min, Math.min(max, Number(value) || 0));
 const TTL_MS = clamp(Number(process.env.GAME_SNAPSHOT_TTL_MS) || 10 * 60 * 1000, 60_000, 30 * 60 * 1000);
@@ -27,9 +28,46 @@ const runtimeStatus = {
   lastReason: null,
 };
 
-const safeString = (value, max = 120) => String(value ?? '').replace(/[\u0000-\u001f\u007f-\u009f<>`]/g, '').trim().slice(0, max);
+const SENSITIVE_KEY_RE = /token|cookie|secret|authorization|service[_-]?role|password|api[_-]?key/i;
+const snapshotSecretValues = () => [
+  process.env.ADMIN_TOKEN,
+  process.env.SUPABASE_SECRET_KEY,
+  process.env.SUPABASE_SERVICE_ROLE_KEY,
+  process.env.TIKTOOL_API_KEY,
+  process.env.OTEL_EXPORTER_OTLP_HEADERS,
+].map((value) => String(value || '')).filter((value) => value.length >= 6);
+const redactSecrets = (value) => {
+  let output = String(value ?? '');
+  for (const secret of snapshotSecretValues()) output = output.split(secret).join('[redacted]');
+  return output;
+};
+const safeString = (value, max = 120) => redactSecrets(value).replace(/[\u0000-\u001f\u007f-\u009f<>`]/g, '').trim().slice(0, max);
+const scrubClone = (value, depth = 0) => {
+  if (depth > 6) return null;
+  if (value === null || value === undefined || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string' || typeof value === 'bigint') return safeString(value, 500);
+  if (Array.isArray(value)) return value.slice(0, 128).map((item) => scrubClone(item, depth + 1));
+  if (typeof value === 'object') {
+    const result = {};
+    for (const [key, child] of Object.entries(value).slice(0, 128)) {
+      if (SENSITIVE_KEY_RE.test(key)) continue;
+      const cleanKey = safeString(key, 80);
+      if (cleanKey) result[cleanKey] = scrubClone(child, depth + 1);
+    }
+    return result;
+  }
+  return null;
+};
 const safeClone = (value, fallback = null) => {
-  try { return JSON.parse(JSON.stringify(value)); } catch { return fallback; }
+  try {
+    const cloned = JSON.parse(JSON.stringify(value));
+    const safe = scrubClone(cloned);
+    return safe === undefined ? fallback : safe;
+  } catch { return fallback; }
+};
+const snapshotPayloadBytes = (payload) => {
+  try { return Buffer.byteLength(JSON.stringify(payload), 'utf8'); } catch { return Number.POSITIVE_INFINITY; }
 };
 const timeout = async (promise) => {
   let timer = null;
@@ -108,6 +146,38 @@ function sanitizeHazards(hazards = []) {
   })).filter((hazard) => hazard.id && hazard.type);
 }
 
+function sanitizeSettings(settings = {}) {
+  const giftLimits = settings?.giftLimits && typeof settings.giftLimits === 'object' ? settings.giftLimits : {};
+  const arenaBackground = ['default', 'cyberpunk', 'space', 'retro'].includes(settings.arenaBackground) ? settings.arenaBackground : 'default';
+  const voiceMode = ['male', 'female'].includes(settings.voiceMode) ? settings.voiceMode : 'male';
+  const narratorStyle = ['explosive', 'esports', 'cinematic'].includes(settings.narratorStyle) ? settings.narratorStyle : 'explosive';
+  const effectIntensity = ['BAIXA', 'NORMAL', 'ALTA'].includes(String(settings.effectIntensity || '').toUpperCase()) ? String(settings.effectIntensity).toUpperCase() : 'NORMAL';
+  const narratorPersonalityRaw = String(settings.narratorPersonality || 'HYPE').toUpperCase();
+  const narratorPersonality = ['ESPORTS', 'HYPE', 'CINEMATIC', 'CHAOTIC', 'SARCASTIC'].includes(narratorPersonalityRaw) ? narratorPersonalityRaw : 'HYPE';
+  return {
+    agentEnabled: settings.agentEnabled !== false,
+    teamMode: Boolean(settings.teamMode),
+    arenaBackground,
+    voiceMode,
+    voiceIntensity: clamp(Math.trunc(Number(settings.voiceIntensity) || 3), 1, 3),
+    narratorStyle,
+    music: settings.music !== false,
+    sound: settings.sound !== false,
+    effectIntensity,
+    narratorPersonality,
+    narratorIntensity: clamp(settings.narratorIntensity ?? 80, 0, 100),
+    narratorFrequency: clamp(settings.narratorFrequency ?? 60, 0, 100),
+    narratorVolume: clamp(settings.narratorVolume ?? 100, 0, 100),
+    narratorEnabled: settings.narratorEnabled !== false,
+    giftLimits: {
+      perPlayerPerRound: clamp(giftLimits.perPlayerPerRound || 12, 1, 100),
+      perRound: clamp(giftLimits.perRound || 120, 1, 1000),
+      pendingPerUser: clamp(giftLimits.pendingPerUser || 3, 1, 10),
+      maxComboActivations: clamp(giftLimits.maxComboActivations || 2, 1, 10),
+    },
+  };
+}
+
 function computeTeamScores(players) {
   const scoreFor = (team) => players.filter((player) => player.team === team).reduce((total, player) => ({
     score: total.score + Number(player.score || 0),
@@ -120,57 +190,70 @@ function computeTeamScores(players) {
 export function captureGameSnapshot({ powerExecutor = null, now = Date.now(), reason = 'periodic' } = {}) {
   const savedAt = Number(now);
   const expiresAt = savedAt + TTL_MS;
+  const safeReason = safeString(reason, 80) || 'periodic';
   const players = (state.players || []).slice(0, MAX_PLAYERS).map(sanitizePlayer).filter((player) => player.id && player.platformUserId);
+  const roundId = safeString(state.roundId || `round-${savedAt}`, 120) || `round-${savedAt}`;
+  const phase = PHASES.has(state.phase) ? state.phase : 'lobby';
+  const payload = {
+    snapshotReason: safeReason,
+    roundId, phase,
+    round: Math.max(1, Math.trunc(Number(state.round) || 1)), storm: clamp(state.storm, 0, 100), likes: Math.max(0, Number(state.likes) || 0),
+    players,
+    winner: state.winner ? safeClone(state.winner, null) : null,
+    countdownEndsAt: Math.max(0, Number(state.countdownEndsAt) || 0), intermissionEndsAt: Math.max(0, Number(state.intermissionEndsAt) || 0),
+    roundStartedAt: Math.max(0, Number(state.roundStartedAt) || 0), suddenDeath: safeClone(state.suddenDeath, { active: false, startedAt: 0 }),
+    bountyTargetId: state.bountyTargetId ? safeString(state.bountyTargetId, 80) : null,
+    bountyTargetPlatformId: state.bountyTargetPlatformId ? safeString(state.bountyTargetPlatformId, 80) : null,
+    bountyClaimedBy: state.bountyClaimedBy ? safeString(state.bountyClaimedBy, 80) : null,
+    settings: sanitizeSettings(state.settings), hazards: sanitizeHazards(state.hazards), boss: sanitizeBoss(state.boss),
+    bossCooldownUntil: Math.max(0, Number(state.bossCooldownUntil) || 0),
+    teamScores: computeTeamScores(players),
+    feed: (Array.isArray(state.feed) ? state.feed : []).slice(0, MAX_FEED).map((item) => ({
+      id: safeString(item?.id, 120), text: safeString(item?.text, 160), tone: safeString(item?.tone, 32), at: Math.max(0, Number(item?.at) || 0),
+    })),
+    legacyGiftRuntime: captureLegacyGiftRuntime(savedAt),
+    powerRuntime: powerExecutor ? {
+      seen: mapEntries(powerExecutor.seen, savedAt),
+      cooldowns: mapEntries(powerExecutor.cooldowns, savedAt),
+      globalCooldowns: mapEntries(powerExecutor.globalCooldowns, savedAt),
+    } : null,
+  };
+  if (snapshotPayloadBytes(payload) > MAX_SNAPSHOT_PAYLOAD_BYTES) throw new Error('snapshot-payload-too-large');
   return {
     snapshotKey: SNAPSHOT_KEY,
     snapshotVersion: SNAPSHOT_VERSION,
-    roundId: safeString(state.roundId || `round-${savedAt}`, 120) || `round-${savedAt}`,
-    phase: PHASES.has(state.phase) ? state.phase : 'lobby',
+    roundId,
+    phase,
     savedAt,
     expiresAt,
-    reason: safeString(reason, 80) || 'periodic',
-    payload: {
-      roundId: safeString(state.roundId, 120), phase: PHASES.has(state.phase) ? state.phase : 'lobby',
-      round: Math.max(1, Math.trunc(Number(state.round) || 1)), storm: clamp(state.storm, 0, 100), likes: Math.max(0, Number(state.likes) || 0),
-      players,
-      winner: state.winner ? safeClone(state.winner, null) : null,
-      countdownEndsAt: Math.max(0, Number(state.countdownEndsAt) || 0), intermissionEndsAt: Math.max(0, Number(state.intermissionEndsAt) || 0),
-      roundStartedAt: Math.max(0, Number(state.roundStartedAt) || 0), suddenDeath: safeClone(state.suddenDeath, { active: false, startedAt: 0 }),
-      bountyTargetId: state.bountyTargetId ? safeString(state.bountyTargetId, 80) : null,
-      bountyTargetPlatformId: state.bountyTargetPlatformId ? safeString(state.bountyTargetPlatformId, 80) : null,
-      bountyClaimedBy: state.bountyClaimedBy ? safeString(state.bountyClaimedBy, 80) : null,
-      settings: safeClone(state.settings, {}), hazards: sanitizeHazards(state.hazards), boss: sanitizeBoss(state.boss),
-      bossCooldownUntil: Math.max(0, Number(state.bossCooldownUntil) || 0),
-      teamScores: computeTeamScores(players),
-      feed: (Array.isArray(state.feed) ? state.feed : []).slice(0, MAX_FEED).map((item) => ({
-        id: safeString(item?.id, 120), text: safeString(item?.text, 160), tone: safeString(item?.tone, 32), at: Math.max(0, Number(item?.at) || 0),
-      })),
-      powerRuntime: powerExecutor ? {
-        seen: mapEntries(powerExecutor.seen, savedAt),
-        cooldowns: mapEntries(powerExecutor.cooldowns, savedAt),
-        globalCooldowns: mapEntries(powerExecutor.globalCooldowns, savedAt),
-      } : null,
-    },
+    reason: safeReason,
+    payload,
   };
 }
 
 export function validateSnapshotEnvelope(input, { now = Date.now(), ttlMs = TTL_MS } = {}) {
   if (!input || typeof input !== 'object') return { ok: false, reason: 'snapshot-missing' };
+  const savedRaw = input.savedAt ?? input.saved_at;
+  const expiresRaw = input.expiresAt ?? input.expires_at;
   const snapshot = {
     snapshotKey: input.snapshotKey ?? input.snapshot_key,
     snapshotVersion: Number(input.snapshotVersion ?? input.snapshot_version),
-    roundId: input.roundId ?? input.round_id,
+    roundId: safeString(input.roundId ?? input.round_id, 120),
     phase: input.phase,
-    savedAt: Number(input.savedAt ?? input.saved_at ? new Date(input.savedAt ?? input.saved_at).getTime() : NaN),
-    expiresAt: Number(input.expiresAt ?? input.expires_at ? new Date(input.expiresAt ?? input.expires_at).getTime() : NaN),
-    reason: input.reason ?? input.payload?.snapshotReason ?? 'unknown',
+    savedAt: typeof savedRaw === 'number' ? savedRaw : new Date(savedRaw).getTime(),
+    expiresAt: typeof expiresRaw === 'number' ? expiresRaw : new Date(expiresRaw).getTime(),
+    reason: safeString(input.reason ?? input.payload?.snapshotReason ?? 'unknown', 80),
     payload: input.payload,
   };
   if (snapshot.snapshotKey !== SNAPSHOT_KEY) return { ok: false, reason: 'snapshot-key-invalid' };
   if (snapshot.snapshotVersion !== SNAPSHOT_VERSION) return { ok: false, reason: 'snapshot-version-unsupported' };
-  if (!safeString(snapshot.roundId, 120)) return { ok: false, reason: 'snapshot-round-invalid' };
+  if (!snapshot.roundId) return { ok: false, reason: 'snapshot-round-invalid' };
   if (!PHASES.has(snapshot.phase)) return { ok: false, reason: 'snapshot-phase-invalid' };
   if (!snapshot.payload || typeof snapshot.payload !== 'object') return { ok: false, reason: 'snapshot-payload-invalid' };
+  if (snapshotPayloadBytes(snapshot.payload) > MAX_SNAPSHOT_PAYLOAD_BYTES) return { ok: false, reason: 'snapshot-payload-too-large' };
+  if (safeString(snapshot.payload.roundId, 120) !== snapshot.roundId) return { ok: false, reason: 'snapshot-round-mismatch' };
+  if (snapshot.payload.phase !== snapshot.phase) return { ok: false, reason: 'snapshot-phase-mismatch' };
+  if (!snapshot.payload.legacyGiftRuntime || typeof snapshot.payload.legacyGiftRuntime !== 'object') return { ok: false, reason: 'snapshot-runtime-invalid' };
   if (!Number.isFinite(snapshot.savedAt) || !Number.isFinite(snapshot.expiresAt)) return { ok: false, reason: 'snapshot-time-invalid' };
   if (snapshot.expiresAt <= now || now - snapshot.savedAt > ttlMs || snapshot.savedAt > now + 30_000) return { ok: false, reason: 'snapshot-expired' };
   if (!Array.isArray(snapshot.payload.players) || snapshot.payload.players.length > MAX_PLAYERS) return { ok: false, reason: 'snapshot-players-invalid' };
@@ -182,6 +265,7 @@ export function restoreGameSnapshot(input, { powerExecutor = null, now = Date.no
   if (!validation.ok) return { restored: false, reason: validation.reason };
   const snapshot = validation.snapshot;
   const payload = snapshot.payload;
+  powerExecutor?.cancelPending?.();
   reset({ preservePlayers: false, preserveGiftInbox: false, now });
   const restoredPlayers = [];
   for (const raw of payload.players.slice(0, MAX_PLAYERS)) {
@@ -192,10 +276,10 @@ export function restoreGameSnapshot(input, { powerExecutor = null, now = Date.no
     restoredPlayers.push(player);
   }
   const currentSettings = state.settings || {};
-  const savedSettings = payload.settings && typeof payload.settings === 'object' ? safeClone(payload.settings, {}) : {};
+  const savedSettings = sanitizeSettings(payload.settings);
   Object.assign(state, {
-    roundId: safeString(payload.roundId || snapshot.roundId, 120),
-    phase: PHASES.has(payload.phase) ? payload.phase : snapshot.phase,
+    roundId: snapshot.roundId,
+    phase: snapshot.phase,
     round: Math.max(1, Math.trunc(Number(payload.round) || 1)),
     storm: clamp(payload.storm, 0, 100), likes: Math.max(0, Number(payload.likes) || 0), players: restoredPlayers,
     winner: payload.winner ? safeClone(payload.winner, null) : null,
@@ -211,6 +295,7 @@ export function restoreGameSnapshot(input, { powerExecutor = null, now = Date.no
     teamScores: computeTeamScores(restoredPlayers),
     feed: (Array.isArray(payload.feed) ? payload.feed : []).slice(0, MAX_FEED).map((item) => ({ id: safeString(item?.id, 120), text: safeString(item?.text, 160), tone: safeString(item?.tone, 32), at: Math.max(0, Number(item?.at) || 0) })),
   });
+  restoreLegacyGiftRuntime(payload.legacyGiftRuntime, now);
   if (powerExecutor && payload.powerRuntime) {
     restoreMap(powerExecutor.seen, payload.powerRuntime.seen, now);
     restoreMap(powerExecutor.cooldowns, payload.powerRuntime.cooldowns, now);
@@ -222,6 +307,7 @@ export function restoreGameSnapshot(input, { powerExecutor = null, now = Date.no
 
 async function saveRemoteSnapshot(snapshot) {
   if (!client) return { saved: false, reason: 'not-configured' };
+  if (snapshotPayloadBytes(snapshot.payload) > MAX_SNAPSHOT_PAYLOAD_BYTES) throw new Error('snapshot-payload-too-large');
   const { error } = await timeout(client.from('game_snapshots').upsert({
     snapshot_key: SNAPSHOT_KEY,
     snapshot_version: snapshot.snapshotVersion,
@@ -229,7 +315,7 @@ async function saveRemoteSnapshot(snapshot) {
     phase: snapshot.phase,
     saved_at: new Date(snapshot.savedAt).toISOString(),
     expires_at: new Date(snapshot.expiresAt).toISOString(),
-    payload: { ...snapshot.payload, snapshotReason: snapshot.reason },
+    payload: snapshot.payload,
   }, { onConflict: 'snapshot_key' }));
   if (error) throw error;
   return { saved: true };
@@ -313,4 +399,4 @@ export function createSnapshotController({ powerExecutor = null, telemetry = nul
   return { save, restore, start, stop, critical, status };
 }
 
-export const snapshotInternals = Object.freeze({ TTL_MS, INTERVAL_MS, TIMEOUT_MS });
+export const snapshotInternals = Object.freeze({ TTL_MS, INTERVAL_MS, TIMEOUT_MS, MAX_SNAPSHOT_PAYLOAD_BYTES });

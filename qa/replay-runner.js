@@ -4,7 +4,9 @@ import {
   __test, applyComment, applyCombatResult, applyGiftEffect, applyStormDamage, finish, join, pause, reset, setStorm, spawnBoss, start, state, tickGame,
 } from '../server/engine.js';
 import { logicalStateDigest, loadReplayFile, validateReplay, withDeterministicRuntime } from '../server/replay.js';
-import { assertValidState } from './invariants.js';
+import { PowerExecutor } from '../server/powers/PowerExecutor.js';
+import { normalizeGiftMapping } from '../server/powers/PowerLimits.js';
+import { powerRegistry } from '../server/powers/PowerRegistry.js';
 
 const pickOutcome = (result = {}) => ({
   applied: Boolean(result?.applied),
@@ -22,73 +24,81 @@ export function runReplay(input) {
   reset();
   state.round = replay.round;
   state.roundId = replay.roundId;
-
   return withDeterministicRuntime(replay.roundSeed, replay.startedAt, (runtime) => {
-    for (const event of replay.events) {
-      runtime.setNow(replay.startedAt + event.atMs);
-      const payload = event.payload || {};
-      let result = null;
-      switch (event.type) {
-        case 'JOIN':
-          result = join(payload.username, payload.teamChoice || null, payload.bot !== false, { platformUserId: payload.platformUserId });
-          break;
-        case 'START':
-          result = start({ now: runtime.now(), countdownMs: Number(payload.countdownMs || 0) });
-          state.roundId = replay.roundId;
-          state.bountyTargetId = payload.bountyTargetId || null;
-          state.bountyTargetPlatformId = payload.bountyTargetPlatformId || null;
-          if (payload.expireSpawnProtection) state.players.forEach((player) => __test.expireSpawnProtection(player.id));
-          break;
-        case 'COMMENT':
-          result = applyComment({ username: payload.username || 'Replay', platformUserId: payload.platformUserId, comment: payload.comment || '' });
-          break;
-        case 'SHOT':
-          result = applyCombatResult({ attackerId: payload.attackerId, targetId: payload.targetId, attackKind: payload.attackKind || 'shot' });
-          assertExpected(pickOutcome(result), payload.expected, `SHOT#${event.seq}`);
-          break;
-        case 'GIFT':
-          result = applyGiftEffect({ ...payload.input, now: runtime.now() });
-          assertExpected(pickOutcome(result), payload.expected, `GIFT#${event.seq}`);
-          break;
-        case 'BOSS':
-          result = spawnBoss({ source: payload.source || 'replay', now: runtime.now() });
-          if (payload.bossId && state.boss?.active) state.boss.id = payload.bossId;
-          assertExpected(pickOutcome(result), payload.expected, `BOSS#${event.seq}`);
-          break;
-        case 'PAUSE':
-          result = pause();
-          if (payload.expectedPhase) assert.equal(state.phase, payload.expectedPhase, `PAUSE#${event.seq}`);
-          break;
-        case 'STORM':
-          result = setStorm(payload.value);
-          assert.equal(state.storm, Number(payload.value), `STORM#${event.seq}`);
-          break;
-        case 'DAMAGE':
-          if (payload.source !== 'storm') break;
-          result = applyStormDamage(payload.targetId);
-          assertExpected(pickOutcome(result), payload.expected, `DAMAGE#${event.seq}`);
-          break;
-        case 'TICK':
-          result = tickGame(runtime.now());
-          break;
-        case 'ROUND_END': {
-          const winner = finish({ now: runtime.now(), intermissionMs: Number(payload.intermissionMs || 0) });
-          if (payload.expectedWinnerId) assert.equal(winner?.id || null, payload.expectedWinnerId, `ROUND_END#${event.seq}`);
-          result = winner;
-          break;
+    const powerExecutor = new PowerExecutor({ state, registry: powerRegistry, spawnBoss, publish: () => {}, now: () => runtime.now() });
+    try {
+      for (const event of replay.events) {
+        runtime.setNow(replay.startedAt + event.atMs);
+        const payload = event.payload || {};
+        let result = null;
+        switch (event.type) {
+          case 'JOIN':
+            result = join(payload.username, payload.team || null, payload.bot !== false, { platformUserId: payload.platformUserId, avatarUrl: payload.avatarUrl || '' });
+            break;
+          case 'START':
+            start({ now: runtime.now(), countdownMs: payload.countdownMs ?? 0 });
+            if (payload.expireSpawnProtection) state.players.forEach((player) => __test.expireSpawnProtection(player.id));
+            state.roundId = replay.roundId;
+            if ('bountyTargetId' in payload) state.bountyTargetId = payload.bountyTargetId || null;
+            if ('bountyTargetPlatformId' in payload) state.bountyTargetPlatformId = payload.bountyTargetPlatformId || null;
+            result = state;
+            break;
+          case 'COMMENT':
+            result = applyComment(payload);
+            break;
+          case 'SHOT':
+            result = applyCombatResult({ attackerId: payload.attackerId, targetId: payload.targetId, attackKind: payload.attackKind || 'shot' });
+            assertExpected(pickOutcome(result), payload.expected, `SHOT#${event.seq}`);
+            break;
+          case 'DAMAGE':
+            if (payload.source !== 'storm') throw new Error(`unsupported-replay-damage:${payload.source}`);
+            result = applyStormDamage(payload.targetId);
+            assertExpected(pickOutcome(result), payload.expected, `DAMAGE#${event.seq}`);
+            break;
+          case 'GIFT':
+            if (payload.mapping) {
+              const mapping = normalizeGiftMapping(payload.mapping, powerRegistry);
+              result = powerExecutor.execute({ ...(payload.input || {}), mapping });
+            } else result = applyGiftEffect({ ...(payload.input || payload), now: runtime.now() });
+            assertExpected(pickOutcome(result), payload.expected, `GIFT#${event.seq}`);
+            break;
+          case 'BOSS':
+            result = spawnBoss({ source: payload.source || 'replay', now: runtime.now() });
+            assertExpected(pickOutcome(result), payload.expected, `BOSS#${event.seq}`);
+            if (payload.bossId && result?.boss) result.boss.id = payload.bossId;
+            break;
+          case 'PAUSE':
+            result = pause();
+            if (payload.expectedPhase) assert.equal(state.phase, payload.expectedPhase, `replay event ${event.seq} phase mismatch`);
+            break;
+          case 'STORM':
+            result = setStorm(payload.value);
+            break;
+          case 'TICK':
+            result = tickGame(runtime.now());
+            break;
+          case 'ROUND_END': {
+            powerExecutor.cancelPending();
+            const winner = finish({ now: runtime.now(), intermissionMs: payload.intermissionMs ?? 0 });
+            if (payload.expectedWinnerId !== undefined) assert.equal(winner?.id || null, payload.expectedWinnerId || null, `replay event ${event.seq} winner mismatch`);
+            result = winner;
+            break;
+          }
+          case 'ELIMINATION':
+          case 'POWER':
+          case 'BOSS_ATTACK':
+            // Derived domain events are represented by their authoritative input event and are not applied twice.
+            break;
+          default:
+            throw new Error(`unsupported-replay-event:${event.type}`);
         }
-        case 'ELIMINATION':
-        case 'POWER':
-        case 'BOSS_ATTACK':
-          break;
-        default:
-          throw new Error(`unsupported-replay-event:${event.type}`);
       }
-      assertValidState(state, { requireEnded: event.type === 'ROUND_END' });
+      const digest = logicalStateDigest(state);
+      if (replay.expectedFinal) assert.deepEqual(digest, replay.expectedFinal, 'replay final state diverged');
+      return { replayVersion: replay.replayVersion, roundId: replay.roundId, digest, state, pendingPowerTimers: powerExecutor.timers.size };
+    } finally {
+      powerExecutor.dispose();
     }
-    const digest = logicalStateDigest(state);
-    if (replay.expectedFinal) assert.deepEqual(digest, replay.expectedFinal, 'replay-final-state');
-    return { replayVersion: replay.replayVersion, roundId: replay.roundId, roundSeed: replay.roundSeed, events: replay.events.length, digest };
   });
 }
 

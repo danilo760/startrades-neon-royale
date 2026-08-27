@@ -10,6 +10,7 @@ async function requestJson(url, options = {}) {
     ...options,
     headers: {
       ...(options.body ? { 'content-type': 'application/json' } : {}),
+      'x-neon-qa-lab': '1',
       ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(options.headers || {}),
     },

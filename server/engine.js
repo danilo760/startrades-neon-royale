@@ -10,6 +10,8 @@ const ARENA_W = 1280, ARENA_H = 720;
 const SPAWN_GRACE_MS = 3000;
 const GIFT_IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
 const PENDING_TTL_MS = 10 * 60 * 1000;
+const LEGACY_RUNTIME_MAP_LIMIT = 500;
+const LEGACY_RUNTIME_PENDING_USERS_LIMIT = 200;
 const BASE_ATTACK_DAMAGE = 4;
 const ATTACK_COOLDOWN_MS = 850;
 const DEFAULT_COUNTDOWN_MS = 5000;
@@ -100,6 +102,104 @@ function registerGiftUsage(senderUserId, requested) {
   const accepted = Math.max(0, Math.min(available, Math.max(1, requested)));
   if (accepted > 0) { giftUsage.set(senderUserId, used + accepted); roundGiftCount += accepted; }
   return accepted;
+}
+
+
+function runtimeExpiryEntries(map, now, limit = LEGACY_RUNTIME_MAP_LIMIT) {
+  return [...map]
+    .filter(([key, expiresAt]) => sanitizeStableId(key) && Number(expiresAt) > now)
+    .slice(-limit)
+    .map(([key, expiresAt]) => [sanitizeStableId(key), Number(expiresAt)]);
+}
+
+export function captureLegacyGiftRuntime(now = nowMs()) {
+  pruneProcessed(now);
+  const limits = getGiftLimits();
+  const perPlayer = clamp(Number(limits.perPlayerPerRound) || 12, 1, 100);
+  const perRound = clamp(Number(limits.perRound) || 120, 1, 1000);
+  const pendingPerUser = clamp(Number(limits.pendingPerUser) || 3, 1, 10);
+  const usage = [...giftUsage]
+    .slice(-LEGACY_RUNTIME_MAP_LIMIT)
+    .map(([key, count]) => [sanitizeStableId(key), clamp(Math.trunc(Number(count) || 0), 0, perPlayer)])
+    .filter(([key]) => Boolean(key));
+  const pending = [];
+  for (const [ownerIdRaw, list] of [...pendingGifts].slice(-LEGACY_RUNTIME_PENDING_USERS_LIMIT)) {
+    const ownerId = sanitizeStableId(ownerIdRaw);
+    if (!ownerId) continue;
+    const items = (Array.isArray(list) ? list : []).filter((item) => Number(item?.expiresAt) > now).slice(-pendingPerUser).map((item) => {
+      const gift = item?.gift || resolveGiftDefinition(item?.giftId, item?.giftName);
+      const eventId = sanitizeStableId(item?.eventId);
+      const senderUserId = sanitizeStableId(item?.senderUserId || ownerId);
+      if (!gift || !eventId || !senderUserId) return null;
+      return {
+        eventId,
+        senderUserId,
+        senderUsername: sanitizeDisplayName(item?.senderUsername, 'fighter', 32),
+        giftId: String(gift.giftId || '').slice(0, 80),
+        giftName: sanitizeDisplayName(item?.giftName || gift.aliases?.[0], 'Presente', 48),
+        repeatCount: clamp(Math.trunc(Number(item?.repeatCount) || 1), 1, 100),
+        source: item?.source === 'control-panel' ? 'control-panel' : 'tiktok',
+        expiresAt: Number(item.expiresAt),
+      };
+    }).filter(Boolean);
+    if (items.length) pending.push([ownerId, items]);
+  }
+  return {
+    roundGiftCount: clamp(Math.trunc(Number(roundGiftCount) || 0), 0, perRound),
+    giftUsage: usage,
+    giftCooldowns: runtimeExpiryEntries(giftCooldowns, now),
+    processedGiftIds: runtimeExpiryEntries(processedGiftIds, now),
+    pendingGifts: pending,
+  };
+}
+
+export function restoreLegacyGiftRuntime(runtime = {}, now = nowMs()) {
+  const limits = getGiftLimits();
+  const perPlayer = clamp(Number(limits.perPlayerPerRound) || 12, 1, 100);
+  const perRound = clamp(Number(limits.perRound) || 120, 1, 1000);
+  const pendingPerUser = clamp(Number(limits.pendingPerUser) || 3, 1, 10);
+  roundGiftCount = clamp(Math.trunc(Number(runtime?.roundGiftCount) || 0), 0, perRound);
+  giftUsage.clear(); giftCooldowns.clear(); processedGiftIds.clear(); pendingGifts.clear();
+
+  for (const item of Array.isArray(runtime?.giftUsage) ? runtime.giftUsage.slice(-LEGACY_RUNTIME_MAP_LIMIT) : []) {
+    if (!Array.isArray(item) || item.length !== 2) continue;
+    const key = sanitizeStableId(item[0]);
+    const count = clamp(Math.trunc(Number(item[1]) || 0), 0, perPlayer);
+    if (key && count > 0) giftUsage.set(key, count);
+  }
+  for (const [targetMap, entries] of [[giftCooldowns, runtime?.giftCooldowns], [processedGiftIds, runtime?.processedGiftIds]]) {
+    for (const item of Array.isArray(entries) ? entries.slice(-LEGACY_RUNTIME_MAP_LIMIT) : []) {
+      if (!Array.isArray(item) || item.length !== 2) continue;
+      const key = sanitizeStableId(item[0]);
+      const expiresAt = Number(item[1]);
+      if (key && Number.isFinite(expiresAt) && expiresAt > now) targetMap.set(key, expiresAt);
+    }
+  }
+  for (const entry of Array.isArray(runtime?.pendingGifts) ? runtime.pendingGifts.slice(-LEGACY_RUNTIME_PENDING_USERS_LIMIT) : []) {
+    if (!Array.isArray(entry) || entry.length !== 2) continue;
+    const ownerId = sanitizeStableId(entry[0]);
+    if (!ownerId) continue;
+    const restored = (Array.isArray(entry[1]) ? entry[1] : []).slice(-pendingPerUser).map((item) => {
+      const gift = resolveGiftDefinition(item?.giftId, item?.giftName);
+      const eventId = sanitizeStableId(item?.eventId);
+      const senderUserId = sanitizeStableId(item?.senderUserId || ownerId);
+      const expiresAt = Number(item?.expiresAt);
+      if (!gift || !eventId || !senderUserId || !Number.isFinite(expiresAt) || expiresAt <= now) return null;
+      return {
+        gift,
+        eventId,
+        senderUserId,
+        senderUsername: sanitizeDisplayName(item?.senderUsername, 'fighter', 32),
+        giftName: sanitizeDisplayName(item?.giftName || gift.aliases?.[0], 'Presente', 48),
+        repeatCount: clamp(Math.trunc(Number(item?.repeatCount) || 1), 1, 100),
+        source: item?.source === 'control-panel' ? 'control-panel' : 'tiktok',
+        expiresAt,
+      };
+    }).filter(Boolean);
+    if (restored.length) pendingGifts.set(ownerId, restored);
+  }
+  pruneProcessed(now);
+  return { roundGiftCount, processedGiftIds: processedGiftIds.size, pendingUsers: pendingGifts.size };
 }
 
 function applyPendingForPlayer(player, now = nowMs()) {

@@ -25,7 +25,7 @@ function safeAttributes(input = {}) {
     let value;
     if (typeof raw === 'boolean') value = { boolValue: raw };
     else if (typeof raw === 'number' && Number.isFinite(raw)) value = Number.isInteger(raw) ? { intValue: String(raw) } : { doubleValue: raw };
-    else if (raw != null && ['string', 'bigint'].includes(typeof raw)) value = { stringValue: String(raw).slice(0, MAX_TEXT) };
+    else if (raw !== null && raw !== undefined && ['string', 'bigint'].includes(typeof raw)) value = { stringValue: String(raw).slice(0, MAX_TEXT) };
     else continue;
     attributes.push({ key: name, value });
   }

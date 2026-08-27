@@ -41,3 +41,25 @@ test('expected final state is enforced by the replay runner', () => {
   const verified = runReplay({ ...replay, expectedFinal: first.digest });
   assert.deepEqual(verified.digest, first.digest);
 });
+
+
+test('mapped PowerExecutor gift replay preserves idempotency and cancels delayed power at round end', () => {
+  let seq = 0;
+  const events = [];
+  const add = (type, atMs, payload = {}) => events.push({ seq: seq++, type, atMs, payload });
+  add('JOIN', 0, { username: 'Replay-A', platformUserId: 'mapped:a', bot: true });
+  add('JOIN', 1, { username: 'Replay-B', platformUserId: 'mapped:b', bot: true });
+  add('START', 10, { countdownMs: 0, expireSpawnProtection: true, bountyTargetId: null, bountyTargetPlatformId: null });
+  const mapping = { giftId: 'mapped-laser', giftName: 'Mapped Laser', enabled: true, powerId: 'orbital-laser', targetMode: 'TARGET_PLAYER', magnitude: 18, durationMs: 1300, cooldownMs: 0, visualPreset: 'orbital-laser', soundPreset: 'laser', narrationPreset: 'cinematic' };
+  const input = { eventId: 'mapped-gift-1', senderUserId: 'mapped:a', senderUsername: 'Replay-A', targetUserId: 'mapped:b', giftId: 'mapped-laser', giftName: 'Mapped Laser', repeatCount: 1 };
+  add('GIFT', 20, { input, mapping, expected: { applied: false, status: 'applied', reason: null, eliminated: false } });
+  add('GIFT', 30, { input, mapping, expected: { applied: false, status: 'rejected', reason: 'duplicate-event', eliminated: false } });
+  add('ROUND_END', 100, { intermissionMs: 10_000, expectedWinnerId: 'mapped:a' });
+  add('TICK', 2_000, {});
+  const replay = { replayVersion: REPLAY_VERSION, roundId: 'mapped-power-round', roundSeed: 0x44556677, round: 1, startedAt: 900000, context: { source: 'test' }, events };
+  const first = runReplay(replay);
+  const second = runReplay(replay);
+  assert.deepEqual(second.digest, first.digest);
+  assert.equal(first.digest.players.find((player) => player.id === 'mapped:b')?.hp, 100);
+  assert.equal(first.pendingPowerTimers, 0);
+});

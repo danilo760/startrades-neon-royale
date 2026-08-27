@@ -65,6 +65,7 @@ export function Overlay() {
     let mounted = true;
     let musicEnabled = null;
     let soundEnabled = null;
+    const killTimerMap = killTimers.current;
 
     const clearBanner = () => {
       activeGiftRef.current = null;
@@ -85,9 +86,9 @@ export function Overlay() {
       setKillfeed((current) => [item, ...current].slice(0, 4));
       const timer = setTimeout(() => {
         setKillfeed((current) => current.filter((entry) => entry.id !== id));
-        killTimers.current.delete(id);
+        killTimerMap.delete(id);
       }, 6500);
-      killTimers.current.set(id, timer);
+      killTimerMap.set(id, timer);
     };
     const syncAudioSettings = (settings = {}) => {
       const nextMusic = settings.music !== false;
@@ -141,8 +142,8 @@ export function Overlay() {
       mounted = false;
       clearTimeout(retry);
       clearTimeout(giftTimer.current);
-      for (const timer of killTimers.current.values()) clearTimeout(timer);
-      killTimers.current.clear();
+      for (const timer of killTimerMap.values()) clearTimeout(timer);
+      killTimerMap.clear();
       socket?.close();
       cleanupSpeech();
       game.destroy(true);
@@ -208,6 +209,6 @@ export function Overlay() {
     {activeGift && <section className={`powerBanner cinematicGift tier-${activeGift.tier || 'support'}`} style={{ '--power': tierColor(activeGift) }}><span>{activeGift.tier === 'premium' ? '✦' : activeGift.tier === 'event' ? '◆' : activeGift.status === 'neutral' ? '·' : '◇'}</span><div><small>{activeGift.status === 'pending' ? 'GIFT PENDENTE' : activeGift.status === 'neutral' ? 'GIFT RECEBIDO' : activeGift.tier === 'premium' ? 'MOMENTO LENDÁRIO' : 'INTERAÇÃO DA LIVE'}</small><strong>{giftText}</strong><em>{activeGift.source === 'control-panel' ? 'SIMULAÇÃO • NÃO É RECEITA REAL' : 'TIKTOK LIVE'}</em></div><b>{activeGift.tier === 'premium' ? 'PREMIUM' : activeGift.tier === 'event' ? 'EVENTO' : 'GIFT'}</b></section>}
 
     {state.phase === 'lobby' && <div className="callout"><small>ENTRE NA PRÓXIMA BATALHA</small><b>Digite <em>!entrar</em></b><span>Gifts ativam efeitos de entretenimento sem prêmio real</span><i /></div>}
-    {state.winner && <div className={`winner team-${state.winner.team || 'solo'}`}><div className="winnerCrown">✦</div><small>{state.winner.type === 'team' ? 'EQUIPE CAMPEÃ' : 'CAMPEÃO'} DA RODADA {state.round}</small><strong>{winnerLabel}</strong><span>{state.winner.survivors != null ? `${state.winner.survivors} sobreviventes • ` : ''}{state.winner.eliminations} eliminações • {state.winner.score} pontos</span>{state.phase === 'ended' && <em>PRÓXIMA RODADA EM {intermission}s</em>}<div className="winnerLine" /></div>}
+    {state.winner && <div className={`winner team-${state.winner.team || 'solo'}`}><div className="winnerCrown">✦</div><small>{state.winner.type === 'team' ? 'EQUIPE CAMPEÃ' : 'CAMPEÃO'} DA RODADA {state.round}</small><strong>{winnerLabel}</strong><span>{state.winner.survivors !== null && state.winner.survivors !== undefined ? `${state.winner.survivors} sobreviventes • ` : ''}{state.winner.eliminations} eliminações • {state.winner.score} pontos</span>{state.phase === 'ended' && <em>PRÓXIMA RODADA EM {intermission}s</em>}<div className="winnerLine" /></div>}
   </main>;
 }
