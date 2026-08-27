@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 import {
   __test, applyComment, applyCombatResult, applyGiftEffect, applyStormDamage, finish, join, pause, reset, setStorm, spawnBoss, start, state, tickGame,
 } from '../server/engine.js';
-import { loadReplayFile, logicalStateDigest, validateReplay, withDeterministicRuntime } from '../server/replay.js';
+import { logicalStateDigest, loadReplayFile, validateReplay, withDeterministicRuntime } from '../server/replay.js';
 import { assertValidState } from './invariants.js';
 
 const pickOutcome = (result = {}) => ({
