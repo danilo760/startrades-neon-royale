@@ -83,6 +83,24 @@ test('restart-safe snapshot restores intermission state without fabricating a ne
   assert.equal(state.winner?.id, a.id);
 });
 
+test('legacy snapshot NORMAL migrates once to AUTO while marked snapshots preserve manual mode', () => {
+  reset({ now: BASE });
+  join('Perf-Migration', null, true, { platformUserId: 'perf:migration' });
+  state.settings.effectIntensity = 'NORMAL';
+  const modern = captureGameSnapshot({ now: BASE + 100, reason: 'performance-mode' });
+  assert.equal(modern.payload.performanceModeVersion, 1);
+
+  reset({ now: BASE + 150 });
+  assert.equal(restoreGameSnapshot(modern, { now: BASE + 200 }).restored, true);
+  assert.equal(state.settings.effectIntensity, 'NORMAL');
+
+  const legacy = structuredClone(modern);
+  delete legacy.payload.performanceModeVersion;
+  reset({ now: BASE + 250 });
+  assert.equal(restoreGameSnapshot(legacy, { now: BASE + 300 }).restored, true);
+  assert.equal(state.settings.effectIntensity, 'AUTO');
+});
+
 test('snapshot payload is secret-safe, byte-bounded and envelope-consistent', () => {
   const previousAdminToken = process.env.ADMIN_TOKEN;
   process.env.ADMIN_TOKEN = 'snapshot-admin-secret-xyz';

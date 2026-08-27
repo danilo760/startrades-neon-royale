@@ -196,6 +196,7 @@ export function captureGameSnapshot({ powerExecutor = null, now = Date.now(), re
   const phase = PHASES.has(state.phase) ? state.phase : 'lobby';
   const payload = {
     snapshotReason: safeReason,
+    performanceModeVersion: 1,
     roundId, phase,
     round: Math.max(1, Math.trunc(Number(state.round) || 1)), storm: clamp(state.storm, 0, 100), likes: Math.max(0, Number(state.likes) || 0),
     players,
@@ -277,6 +278,8 @@ export function restoreGameSnapshot(input, { powerExecutor = null, now = Date.no
   }
   const currentSettings = state.settings || {};
   const savedSettings = sanitizeSettings(payload.settings);
+  // Before adaptive performance shipped, NORMAL was the implicit default. Migrate only unmarked snapshots once.
+  if (!payload.performanceModeVersion && savedSettings.effectIntensity === 'NORMAL') savedSettings.effectIntensity = 'AUTO';
   Object.assign(state, {
     roundId: snapshot.roundId,
     phase: snapshot.phase,
