@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { randomUUID } from 'node:crypto';
+import { createServer } from 'node:http';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import { TikTokLive } from 'tiktok-live-api';
@@ -18,6 +19,7 @@ import { NarratorDirector } from './powers/NarratorDirector.js';
 import { BossPhaseDirector } from './powers/BossPhaseDirector.js';
 import { GiftCinematicDirector } from './powers/GiftCinematicDirector.js';
 import { LiveInteractionManager } from './powers/LiveInteractionManager.js';
+import { createSnapshotController } from './snapshot.js';
 import { telemetry } from './telemetry.js';
 
 const cfg = {
@@ -36,7 +38,7 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '200kb' }));
 app.use(express.static('dist'));
-const server = app.listen(cfg.port, () => console.log(`StarTrades LIVE http://127.0.0.1:${cfg.port} (${cfg.mock ? 'SIMULAÇÃO' : '@' + cfg.username})`));
+const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/events' });
 const giftMappings = new GiftMappingService();
 const publicState = () => ({ ...state, arenaKings: getLeaderboard().slice(0, 3), powerCatalog: powerRegistry.publicCatalog() });
@@ -55,8 +57,6 @@ wss.on('connection', (socket) => {
   telemetry.gauge('active_connections', wss.clients.size);
   socket.send(JSON.stringify({ type: 'state', state: publicState() }));
 });
-void initializeLeaderboard().then(() => emit('leaderboard:ready', { count: getLeaderboard().length }));
-void giftMappings.initialize().then((status) => emit('gift-mappings:ready', status));
 
 const giftLedger = new GiftEventLedger();
 eventBus.on(ENGINE_EVENT_CHANNEL, (event) => emit(event.type, event.payload));
@@ -69,15 +69,29 @@ const narratorDirector = new NarratorDirector({ bus: eventBus, narrator, state }
 const bossDirector = new BossPhaseDirector({ state, publish });
 const giftCinematicDirector = new GiftCinematicDirector({ bus: eventBus, publish }).start();
 const liveInteractions = new LiveInteractionManager({ publish });
+const snapshots = createSnapshotController({ powerExecutor, telemetry, publish });
 state.settings.effectIntensity ||= 'NORMAL';
-narratorDirector.setConfig({ personality: state.settings.narratorPersonality || 'HYPE', intensity: state.settings.narratorIntensity ?? 80, frequency: state.settings.narratorFrequency ?? 60, volume: state.settings.narratorVolume ?? 100, enabled: state.settings.narratorEnabled ?? true });
+
+const applyNarratorConfig = () => narratorDirector.setConfig({
+  personality: state.settings.narratorPersonality || 'HYPE',
+  intensity: state.settings.narratorIntensity ?? 80,
+  frequency: state.settings.narratorFrequency ?? 60,
+  volume: state.settings.narratorVolume ?? 100,
+  enabled: state.settings.narratorEnabled ?? true,
+});
+applyNarratorConfig();
 
 eventBus.on('gift:applied', (payload = {}) => {
   const target = state.players.find((player) => player.id === payload.targetPlayerId);
   comboManager.ingest({ ...payload, team: target?.team || '', at: Date.now() });
 });
 eventBus.on('player:eliminated', (payload = {}) => rivalryManager.recordElimination(payload));
-eventBus.on('round:ended', () => { comboManager.reset(); rivalryManager.endAll('round-ended'); liveInteractions.reset(); });
+eventBus.on('round:started', () => snapshots.critical('round-start'));
+eventBus.on('boss:spawned', () => snapshots.critical('boss-spawn'));
+eventBus.on('round:ended', () => {
+  comboManager.reset(); rivalryManager.endAll('round-ended'); liveInteractions.reset(); snapshots.critical('round-end');
+});
+eventBus.on('round:lobby', () => snapshots.critical('round-lobby'));
 
 function chat(event) {
   const user = event.user || {};
@@ -112,11 +126,8 @@ function processMappedGift(input = {}) {
     return result;
   }
   let result;
-  if (giftMappings.isLegacyDefault(mapping)) {
-    result = applyGiftEffect({ ...input, giftId: mapping.giftId, giftName: input.giftName || mapping.giftName });
-  } else {
-    result = powerExecutor.execute({ ...input, giftId: mapping.giftId, giftName: input.giftName || mapping.giftName, mapping });
-  }
+  if (giftMappings.isLegacyDefault(mapping)) result = applyGiftEffect({ ...input, giftId: mapping.giftId, giftName: input.giftName || mapping.giftName });
+  else result = powerExecutor.execute({ ...input, giftId: mapping.giftId, giftName: input.giftName || mapping.giftName, mapping });
   telemetry.timing('gift_processing_latency', performance.now() - started, { 'gift.id': mapping.giftId, 'power.id': mapping.powerId, 'target.mode': mapping.targetMode, 'round.id': state.roundId, result: result?.status || 'unknown' });
   return result;
 }
@@ -135,9 +146,11 @@ function gift(event) {
   processMappedGift({ eventId: e.eventId, senderUserId: e.senderUserId, senderUsername: e.senderUsername, targetUserId: e.targetUserId, giftId: e.giftId, giftName: e.giftName, repeatCount: e.repeatCount, source: 'tiktok' });
 }
 
-if (!cfg.mock) {
+let live = null;
+function startTikTok() {
+  if (cfg.mock) return;
   if (!cfg.apiKey) throw new Error('TIKTOOL_API_KEY ausente');
-  const live = new TikTokLive(cfg.username, { apiKey: cfg.apiKey, autoReconnect: true, maxReconnectAttempts: 30 });
+  live = new TikTokLive(cfg.username, { apiKey: cfg.apiKey, autoReconnect: true, maxReconnectAttempts: 30 });
   live.on('chat', chat); live.on('gift', gift);
   live.on('like', (event) => {
     const bonus = likes(event.likeCount);
@@ -174,24 +187,27 @@ app.post('/api/battle/pause', admin('battle-pause'), (_req, res) => {
   if (!changed) return conflict(res, 'battle-not-pausable');
   emit('battle-pause', { phase: state.phase });
   narrator.local(state.phase === 'paused' ? 'Batalha pausada.' : 'Batalha retomada.', { priority: 3, emotion: state.phase === 'paused' ? 'calm' : 'battle', eventType: 'round:paused' });
+  snapshots.critical(state.phase === 'paused' ? 'pause' : 'resume');
   ok(res);
 });
 app.post('/api/battle/end', admin('battle-end'), (_req, res) => {
   if (!['countdown', 'running', 'paused'].includes(state.phase)) return conflict(res, 'battle-not-active');
   const winner = finish({ intermissionMs: cfg.intermissionMs }); emit('battle-end', { winner }); ok(res);
 });
-app.post('/api/battle/reset', admin('battle-reset'), (_req, res) => { reset(); comboManager.reset(); rivalryManager.endAll('admin-reset'); liveInteractions.reset(); emit('reset'); ok(res); });
+app.post('/api/battle/reset', admin('battle-reset'), (_req, res) => {
+  reset(); comboManager.reset(); rivalryManager.endAll('admin-reset'); liveInteractions.reset(); emit('reset'); snapshots.critical('admin-reset'); ok(res);
+});
 app.post('/api/test/players', admin('test-players'), (req, res) => { if (!cfg.mock) return res.status(403).json({ ok: false, error: 'test-mode-disabled' }); addBots(req.body.names || []); emit('players'); ok(res); });
 app.post('/api/storm', admin('storm'), (req, res) => {
   setStorm(req.body.value); emit('storm', { value: state.storm });
   if (state.storm >= 60) narrator.local(`Tempestade em ${state.storm} por cento.`, { priority: 2, emotion: 'urgent', eventType: 'storm' });
-  ok(res);
+  snapshots.critical('storm-admin'); ok(res);
 });
 app.post('/api/settings', admin('settings'), (req, res) => {
   updateSettings(req.body);
   if (['BAIXA', 'NORMAL', 'ALTA'].includes(String(req.body.effectIntensity || '').toUpperCase())) state.settings.effectIntensity = String(req.body.effectIntensity).toUpperCase();
   narratorDirector.setConfig(req.body);
-  emit('settings'); ok(res);
+  emit('settings'); snapshots.critical('settings'); ok(res);
 });
 
 app.get('/api/admin/gift-mappings', admin('gift-mappings-read'), (_req, res) => res.json({ ok: true, mappings: giftMappings.list(), powers: powerRegistry.publicCatalog(), persistence: giftMappings.status() }));
@@ -234,7 +250,14 @@ app.post('/api/admin/boss', admin('boss'), (req, res) => {
 app.post('/api/mock/gift', (_req, res) => res.status(410).json({ ok: false, error: 'use-admin-gift-simulator' }));
 app.post('/api/mock/comment', admin('mock-comment'), (req, res) => { if (!cfg.mock) return res.status(403).json({ ok: false, error: 'test-mode-disabled' }); chat({ ...req.body, user: { userId: req.body.user?.userId || 'mock-user', uniqueId: req.body.user?.uniqueId || req.body.username || 'mock' } }); ok(res); });
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'startrades-neon-royale', uptimeSeconds: Math.floor(process.uptime()), mappings: giftMappings.status(), telemetry: telemetry.status() }));
+app.get('/api/health', (_req, res) => res.json({
+  ok: true,
+  service: 'startrades-neon-royale',
+  uptimeSeconds: Math.floor(process.uptime()),
+  mappings: giftMappings.status(),
+  snapshots: snapshots.status(),
+  telemetry: telemetry.status(),
+}));
 app.get('/api/leaderboard', (_req, res) => res.json({ ok: true, kings: getLeaderboard().slice(0, 3) }));
 app.get('/api/config', (_req, res) => res.json({ username: cfg.username, mock: cfg.mock, model: cfg.model, adminConfigured: Boolean(cfg.adminToken), countdownMs: cfg.countdownMs, intermissionMs: cfg.intermissionMs, giftCatalog: state.giftCatalog, powerCatalog: powerRegistry.publicCatalog(), effectIntensity: state.settings.effectIntensity }));
 
@@ -247,27 +270,71 @@ function autoFinish() {
 }
 let lastStateBroadcastAt = 0;
 let lastMetricsAt = 0;
-setInterval(() => {
-  const now = Date.now();
-  tickGame(now);
-  const bossStarted = performance.now();
-  bossDirector.tick(now);
-  telemetry.timing('boss_tick_duration', performance.now() - bossStarted, { 'boss.phase': state.boss?.phase || 0, 'round.id': state.roundId });
-  autoFinish();
-  if (now - lastMetricsAt >= 10_000) {
-    lastMetricsAt = now;
-    telemetry.gauge('active_players', state.players.filter((player) => player.alive).length, { 'round.id': state.roundId });
-    telemetry.gauge('active_connections', wss.clients.size, { 'round.id': state.roundId });
-  }
-  if (['countdown', 'running', 'ended'].includes(state.phase) && now - lastStateBroadcastAt >= 500) { lastStateBroadcastAt = now; emit('tick'); }
-}, 250).unref?.();
-setInterval(() => { tickStorm(); if (state.phase === 'running') emit('tick'); }, 7000).unref?.();
+let gameLoopTimer = null;
+let stormTimer = null;
+function startLoops() {
+  if (gameLoopTimer || stormTimer) return;
+  gameLoopTimer = setInterval(() => {
+    const now = Date.now();
+    const tickStarted = performance.now();
+    tickGame(now);
+    telemetry.timing('game_tick_duration', performance.now() - tickStarted, { 'round.id': state.roundId, phase: state.phase });
+    const bossStarted = performance.now();
+    bossDirector.tick(now);
+    telemetry.timing('boss_tick_duration', performance.now() - bossStarted, { 'boss.phase': state.boss?.phase || 0, 'round.id': state.roundId });
+    autoFinish();
+    if (now - lastMetricsAt >= 10_000) {
+      lastMetricsAt = now;
+      telemetry.gauge('active_players', state.players.filter((player) => player.alive).length, { 'round.id': state.roundId });
+      telemetry.gauge('active_connections', wss.clients.size, { 'round.id': state.roundId });
+    }
+    if (['countdown', 'running', 'ended'].includes(state.phase) && now - lastStateBroadcastAt >= 500) { lastStateBroadcastAt = now; emit('tick'); }
+  }, 250);
+  gameLoopTimer.unref?.();
+  stormTimer = setInterval(() => { tickStorm(); if (state.phase === 'running') emit('tick'); }, 7000);
+  stormTimer.unref?.();
+}
+function stopLoops() {
+  if (gameLoopTimer) clearInterval(gameLoopTimer);
+  if (stormTimer) clearInterval(stormTimer);
+  gameLoopTimer = null; stormTimer = null;
+}
+
+async function listen() {
+  await new Promise((resolve, reject) => {
+    const onError = (error) => { server.off('listening', onListening); reject(error); };
+    const onListening = () => { server.off('error', onError); resolve(); };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(cfg.port);
+  });
+  console.log(`StarTrades LIVE http://127.0.0.1:${cfg.port} (${cfg.mock ? 'SIMULAÇÃO' : '@' + cfg.username})`);
+}
+
+async function bootstrap() {
+  const [leaderboardReady, mappingStatus] = await Promise.all([initializeLeaderboard(), giftMappings.initialize()]);
+  const restoreResult = await snapshots.restore();
+  state.settings.effectIntensity ||= 'NORMAL';
+  applyNarratorConfig();
+  await listen();
+  startLoops();
+  snapshots.start();
+  emit('leaderboard:ready', { count: getLeaderboard().length, persistenceAvailable: Boolean(leaderboardReady) });
+  emit('gift-mappings:ready', mappingStatus);
+  emit('snapshot:ready', { restored: Boolean(restoreResult.restored), reason: restoreResult.reason || null, status: snapshots.status() });
+  startTikTok();
+}
 
 let shuttingDown = false;
-function shutdown(signal) {
+async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[shutdown] ${signal}`);
+  const forceExit = setTimeout(() => process.exit(1), 15_000);
+  forceExit.unref?.();
+  stopLoops();
+  snapshots.stop();
+  await snapshots.save(`shutdown-${String(signal).toLowerCase()}`);
   giftCinematicDirector.dispose();
   narratorDirector.dispose();
   narrator.dispose();
@@ -275,8 +342,7 @@ function shutdown(signal) {
   comboManager.reset();
   rivalryManager.endAll('shutdown');
   liveInteractions.reset();
-  const forceExit = setTimeout(() => process.exit(1), 15_000);
-  forceExit.unref?.();
+  try { live?.disconnect?.(); } catch {}
   for (const client of wss.clients) client.close(1001, 'server-shutdown');
   wss.close(() => {
     server.close(() => {
@@ -285,7 +351,13 @@ function shutdown(signal) {
     });
   });
 }
-process.once('SIGTERM', () => shutdown('SIGTERM'));
-process.once('SIGINT', () => shutdown('SIGINT'));
+process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
+process.once('SIGINT', () => { void shutdown('SIGINT'); });
 
 app.get('*', (_req, res) => res.sendFile(new URL('../dist/index.html', import.meta.url).pathname));
+
+void bootstrap().catch((error) => {
+  console.error(`[boot] ${String(error?.message || error).slice(0, 160)}`);
+  process.exitCode = 1;
+  if (!server.listening) void listen().catch(() => process.exit(1));
+});
