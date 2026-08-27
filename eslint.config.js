@@ -1,40 +1,65 @@
-import js from "@eslint/js";
-import eslintPluginPrettier from "eslint-plugin-prettier/recommended";
-import globals from "globals";
-import reactHooks from "eslint-plugin-react-hooks";
-import reactRefresh from "eslint-plugin-react-refresh";
-import tseslint from "typescript-eslint";
+import globals from 'globals';
+import react from 'eslint-plugin-react';
+import reactHooks from 'eslint-plugin-react-hooks';
 
-export default tseslint.config(
-  { ignores: ["dist", ".output", ".vinxi"] },
+const baseRules = {
+  'no-unused-vars': ['error', {
+    argsIgnorePattern: '^_',
+    caughtErrorsIgnorePattern: '^_',
+    varsIgnorePattern: '^_',
+  }],
+  'no-undef': 'error',
+  eqeqeq: ['error', 'always'],
+};
+
+export default [
   {
-    extends: [js.configs.recommended, ...tseslint.configs.recommended],
-    files: ["**/*.{ts,tsx}"],
+    ignores: [
+      'dist/**',
+      'node_modules/**',
+      'playwright-report/**',
+      'test-results/**',
+      '.qa-replays/**',
+    ],
+  },
+  {
+    files: ['server/**/*.js', 'qa/**/*.js', '*.config.js'],
     languageOptions: {
-      ecmaVersion: 2020,
-      globals: globals.browser,
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: globals.node,
     },
-    plugins: {
-      "react-hooks": reactHooks,
-      "react-refresh": reactRefresh,
-    },
-    rules: {
-      ...reactHooks.configs.recommended.rules,
-      "no-restricted-imports": [
-        "error",
-        {
-          paths: [
-            {
-              name: "server-only",
-              message:
-                "TanStack Start does not use the Next.js `server-only` package. Rename the module to `*.server.ts` or mark it with `@tanstack/react-start/server-only`.",
-            },
-          ],
-        },
-      ],
-      "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
-      "@typescript-eslint/no-unused-vars": "off",
+    rules: baseRules,
+  },
+  {
+    files: ['qa/e2e/**/*.spec.js'],
+    languageOptions: {
+      globals: { ...globals.node, ...globals.browser },
     },
   },
-  eslintPluginPrettier,
-);
+  {
+    files: ['src/**/*.{js,jsx}'],
+    plugins: {
+      react,
+      'react-hooks': reactHooks,
+    },
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      parserOptions: {
+        ecmaFeatures: { jsx: true },
+      },
+      globals: globals.browser,
+    },
+    settings: {
+      react: { version: 'detect' },
+    },
+    rules: {
+      ...baseRules,
+      'react/jsx-uses-react': 'error',
+      'react/jsx-uses-vars': 'error',
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
+    },
+  },
+];
