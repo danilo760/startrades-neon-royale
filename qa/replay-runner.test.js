@@ -10,7 +10,7 @@ const buildReplay = () => {
   add('JOIN', 0, { username: 'Replay-A', platformUserId: 'replay:a', bot: true });
   add('JOIN', 1, { username: 'Replay-B', platformUserId: 'replay:b', bot: true });
   add('START', 10, { countdownMs: 0, expireSpawnProtection: true, bountyTargetId: null, bountyTargetPlatformId: null });
-  add('SHOT', 20, { attackerId: 'replay:a', targetId: 'replay:b', expected: { applied: true, status: null, reason: null, eliminated: false } });
+  add('SHOT', 20, { attackerId: 'replay:a', targetId: 'replay:b', expected: { applied: true, status: null, reason: 'combat', eliminated: false } });
   add('SHOT', 30, { attackerId: 'replay:a', targetId: 'replay:b', expected: { applied: false, status: null, reason: 'attack-cooldown', eliminated: false } });
   const giftInput = { eventId: 'replay-gift-1', senderUserId: 'replay:a', senderUsername: 'Replay-A', targetUserId: 'replay:a', giftId: '5655', giftName: 'Rose', repeatCount: 1 };
   add('GIFT', 40, { input: giftInput, expected: { applied: false, status: 'applied', reason: null, eliminated: false } });
