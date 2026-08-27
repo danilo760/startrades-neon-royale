@@ -1,7 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
-  testDir: './qa/e2e', timeout: 30_000, fullyParallel: false, retries: process.env.CI ? 1 : 0,
+  testDir: './qa/e2e', timeout: 30_000, fullyParallel: false, workers: process.env.CI ? 1 : undefined, retries: process.env.CI ? 1 : 0,
   use: { baseURL: 'http://127.0.0.1:4173', trace: 'retain-on-failure' },
   webServer: {
     command: 'npm run build && npm start', url: 'http://127.0.0.1:4173/api/health', reuseExistingServer: !process.env.CI,

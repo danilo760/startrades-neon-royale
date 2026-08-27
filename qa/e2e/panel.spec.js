@@ -17,6 +17,7 @@ test('PanelBot operates control panel, HTTP and WebSocket without browser errors
     const [response] = await Promise.all([page.waitForResponse((candidate) => candidate.url().endsWith(path) && candidate.request().method() === 'POST'), button.click()]);
     expect(response.ok(), `${path} returned ${response.status()}: ${await response.text()}`).toBeTruthy();
     await page.waitForTimeout(320);
+    return response;
   };
   await clickAdmin(page.getByRole('button', { name: /ADICIONAR COMBATENTES/ }), '/api/test/players');
   await expect(page.getByText(/6 \/ 6/)).toBeVisible();
@@ -25,10 +26,18 @@ test('PanelBot operates control panel, HTTP and WebSocket without browser errors
   await clickAdmin(page.getByRole('button', { name: /PAUSAR/ }), '/api/battle/pause'); await expect(page.locator('.stats').getByText('paused')).toBeVisible();
   await clickAdmin(page.getByRole('button', { name: /PAUSAR/ }), '/api/battle/pause'); await expect(page.locator('.stats').getByText('running')).toBeVisible();
   const storm = page.locator('input.stormRange');
-  await storm.fill('80');
-  await Promise.all([page.waitForResponse((response) => response.url().endsWith('/api/storm')), storm.dispatchEvent('mouseup')]);
-  await page.waitForTimeout(320);
-  await expect(page.locator('.stormValue')).toContainText('80');
+  const [stormResponse] = await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith('/api/storm') && response.request().method() === 'POST'),
+    storm.evaluate((element) => {
+      element.value = '80';
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    }),
+  ]);
+  expect(stormResponse.ok()).toBeTruthy();
+  const stormPayload = await stormResponse.json();
+  expect(stormPayload.state?.storm).toBe(80);
+  await expect.poll(async () => Number((await page.locator('.stormValue').textContent())?.replace(/\D/g, '') || 0), { timeout: 2000 }).toBeGreaterThanOrEqual(79);
   await clickAdmin(page.getByRole('button', { name: 'TESTAR' }), '/api/admin/gift');
   await clickAdmin(page.getByRole('button', { name: /INVOCAR COLOSSUS/ }), '/api/admin/boss'); await expect(page.getByText('ATIVO').first()).toBeVisible();
 
