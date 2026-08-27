@@ -13,21 +13,29 @@ test('PanelBot operates control panel, HTTP and WebSocket without browser errors
   await page.goto('/control');
   await expect(page.getByText('STARTRADES COMMAND')).toBeVisible();
   await page.getByLabel('Token administrativo').fill('playwright-admin-token');
-  await page.getByRole('button', { name: /ADICIONAR COMBATENTES/ }).click();
+  const clickAdmin = async (button, path) => {
+    const [response] = await Promise.all([page.waitForResponse((candidate) => candidate.url().endsWith(path) && candidate.request().method() === 'POST'), button.click()]);
+    expect(response.ok(), `${path} returned ${response.status()}: ${await response.text()}`).toBeTruthy();
+    await page.waitForTimeout(320);
+  };
+  await clickAdmin(page.getByRole('button', { name: /ADICIONAR COMBATENTES/ }), '/api/test/players');
   await expect(page.getByText(/6 \/ 6/)).toBeVisible();
-  await page.getByRole('button', { name: /INICIAR/ }).click();
+  await clickAdmin(page.getByRole('button', { name: /INICIAR/ }), '/api/battle/start');
   await expect(page.locator('.stats').getByText('running')).toBeVisible();
-  await page.getByRole('button', { name: /PAUSAR/ }).click(); await expect(page.locator('.stats').getByText('paused')).toBeVisible();
-  await page.getByRole('button', { name: /PAUSAR/ }).click(); await expect(page.locator('.stats').getByText('running')).toBeVisible();
-  const storm = page.locator('input.stormRange'); await storm.fill('80'); await storm.dispatchEvent('mouseup');
+  await clickAdmin(page.getByRole('button', { name: /PAUSAR/ }), '/api/battle/pause'); await expect(page.locator('.stats').getByText('paused')).toBeVisible();
+  await clickAdmin(page.getByRole('button', { name: /PAUSAR/ }), '/api/battle/pause'); await expect(page.locator('.stats').getByText('running')).toBeVisible();
+  const storm = page.locator('input.stormRange');
+  await storm.fill('80');
+  await Promise.all([page.waitForResponse((response) => response.url().endsWith('/api/storm')), storm.dispatchEvent('mouseup')]);
+  await page.waitForTimeout(320);
   await expect(page.locator('.stormValue')).toContainText('80');
-  await page.getByRole('button', { name: 'TESTAR' }).click();
-  await page.getByRole('button', { name: /INVOCAR COLOSSUS/ }).click(); await expect(page.getByText('ATIVO').first()).toBeVisible();
+  await clickAdmin(page.getByRole('button', { name: 'TESTAR' }), '/api/admin/gift');
+  await clickAdmin(page.getByRole('button', { name: /INVOCAR COLOSSUS/ }), '/api/admin/boss'); await expect(page.getByText('ATIVO').first()).toBeVisible();
 
   const power = page.getByLabel('Poder'); await power.selectOption('chain-lightning');
-  await page.getByRole('button', { name: 'SALVAR' }).click(); await expect(page.locator('.notice')).toContainText(/salvo|sincronizados|fallback em memória/i);
-  await page.getByRole('button', { name: /ENCERRAR/ }).click(); await expect(page.locator('.stats').getByText('ended')).toBeVisible();
-  page.once('dialog', (dialog) => dialog.accept()); await page.getByRole('button', { name: /ZERAR RODADA/ }).click(); await expect(page.locator('.stats').getByText('lobby')).toBeVisible();
+  await clickAdmin(page.getByRole('button', { name: 'SALVAR' }), '/api/admin/gift-mappings'); await expect(page.locator('.notice')).toContainText(/salvo|sincronizados|fallback em memória/i);
+  await clickAdmin(page.getByRole('button', { name: /ENCERRAR/ }), '/api/battle/end'); await expect(page.locator('.stats').getByText('ended')).toBeVisible();
+  page.once('dialog', (dialog) => dialog.accept()); await clickAdmin(page.getByRole('button', { name: /ZERAR RODADA/ }), '/api/battle/reset'); await expect(page.locator('.stats').getByText('lobby')).toBeVisible();
 
   const health = await request.get('/api/health'); expect(health.ok()).toBeTruthy();
   await expect.poll(() => wsEvents.some((event) => event.type === 'battle-end')).toBeTruthy();
