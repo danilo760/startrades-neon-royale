@@ -18,6 +18,12 @@ const broadcastMode = () => {
   if (requested === 'landscape') return 'landscape';
   return window.innerHeight > window.innerWidth * 1.25 ? 'vertical' : 'landscape';
 };
+const rendererType = () => {
+  const requested = new URLSearchParams(location.search).get('renderer');
+  if (requested === 'canvas') return Phaser.CANVAS;
+  if (requested === 'webgl') return Phaser.WEBGL;
+  return Phaser.AUTO;
+};
 
 export function Overlay() {
   const host = useRef(null);
@@ -35,7 +41,7 @@ export function Overlay() {
   const [mode] = useState(broadcastMode);
 
   useEffect(() => {
-    const timer = setInterval(() => setClock(Date.now()), 200);
+    const timer = setInterval(() => setClock(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
 
@@ -44,19 +50,21 @@ export function Overlay() {
     const bridge = { unlock: () => {} };
     const scene = new GameScene(bridge);
     const game = new Phaser.Game({
-      type: Phaser.AUTO,
+      type: rendererType(),
       width: 1280,
       height: 720,
       parent: host.current,
       transparent: true,
       physics: { default: 'arcade' },
       scene: [scene],
-      render: { antialias: true, roundPixels: false },
+      render: { antialias: mode !== 'vertical', roundPixels: false },
       scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
     });
     let socket;
     let retry;
     let mounted = true;
+    let musicEnabled = null;
+    let soundEnabled = null;
 
     const clearBanner = () => {
       activeGiftRef.current = null;
@@ -81,6 +89,12 @@ export function Overlay() {
       }, 6500);
       killTimers.current.set(id, timer);
     };
+    const syncAudioSettings = (settings = {}) => {
+      const nextMusic = settings.music !== false;
+      const nextSound = settings.sound !== false;
+      if (nextMusic !== musicEnabled) { musicEnabled = nextMusic; setMusic(nextMusic); }
+      if (nextSound !== soundEnabled) { soundEnabled = nextSound; setSound(nextSound); }
+    };
 
     const connect = () => {
       socket = new WebSocket(wsUrl());
@@ -93,11 +107,10 @@ export function Overlay() {
         let event;
         try { event = JSON.parse(data); } catch { return; }
         const next = event.state;
-        if (next) {
-          setState({ ...next });
+        if (next && event.type !== 'combat:shot') {
+          setState(next);
           scene.syncState(next);
-          setMusic(next.settings?.music !== false);
-          setSound(next.settings?.sound !== false);
+          syncAudioSettings(next.settings);
         }
         if (event.type === 'gift:applied') { scene.triggerGift(event.payload); showGift({ ...event.payload, status: 'applied' }); }
         if (event.type === 'gift:pending') showGift({ ...event.payload, status: 'pending' });
@@ -134,7 +147,7 @@ export function Overlay() {
       cleanupSpeech();
       game.destroy(true);
     };
-  }, []);
+  }, [mode]);
 
   const enable = () => {
     unlockAudio(); setAudio(true); setMusic(state.settings?.music !== false); setSound(state.settings?.sound !== false);

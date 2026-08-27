@@ -31,6 +31,7 @@ export class PerformanceWatchdog {
     this.switchCooldownMs = Math.max(500, Number(switchCooldownMs) || 3000);
     this.sampleWindow = clamp(Math.trunc(sampleWindow), 20, 180);
     this.frameTimes = [];
+    this.frameTotal = 0;
     this.candidate = this.level;
     this.candidateSince = this.now();
     this.lastSwitchAt = -Infinity;
@@ -41,8 +42,9 @@ export class PerformanceWatchdog {
     const now = this.now();
     const frame = clamp(deltaMs, 1, 250);
     this.frameTimes.push(frame);
-    if (this.frameTimes.length > this.sampleWindow) this.frameTimes.shift();
-    const avg = this.frameTimes.reduce((sum, value) => sum + value, 0) / Math.max(1, this.frameTimes.length);
+    this.frameTotal += frame;
+    if (this.frameTimes.length > this.sampleWindow) this.frameTotal -= this.frameTimes.shift();
+    const avg = this.frameTotal / Math.max(1, this.frameTimes.length);
     const fps = clamp(1000 / Math.max(1, avg), 1, 240);
     const memoryBytes = Number(globalThis.performance?.memory?.usedJSHeapSize || 0);
     this.lastMetrics = {
@@ -92,6 +94,7 @@ export class PerformanceWatchdog {
     this.candidateSince = this.now();
     this.lastSwitchAt = -Infinity;
     this.frameTimes.length = 0;
+    this.frameTotal = 0;
   }
 }
 

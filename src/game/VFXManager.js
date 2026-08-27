@@ -2,19 +2,43 @@ import Phaser from 'phaser';
 import { sfx } from '../audio.js';
 
 const POWER_IDS = new Set(['black-hole', 'chain-lightning', 'neon-tornado', 'orbital-laser', 'time-freeze', 'shockwave', 'gravity-bomb', 'supernova']);
+const VALID_LEVELS = new Set(['EMERGENCY', 'LOW', 'NORMAL', 'HIGH']);
 
 export class VFXManager {
   constructor(scene) {
     this.scene = scene;
     this.pool = [];
+    this.free = [];
+    this.activeCount = 0;
     this.bloomed = new WeakSet();
-    this.maxPool = 180;
+    this.maxPool = 160;
     this.makeSparkTexture();
   }
 
+  effectLevel() {
+    const runtime = String(this.scene?.effectiveEffectIntensity || '').toUpperCase();
+    if (VALID_LEVELS.has(runtime)) return runtime;
+    const setting = String(this.scene?.state?.settings?.effectIntensity || 'NORMAL').toUpperCase();
+    if (['BAIXA', 'LOW', 'REDUCED'].includes(setting)) return 'LOW';
+    if (['ALTA', 'HIGH'].includes(setting)) return 'HIGH';
+    if (setting === 'EMERGENCY') return 'EMERGENCY';
+    return 'NORMAL';
+  }
+
   effectScale() {
-    const intensity = String(this.scene?.state?.settings?.effectIntensity || 'NORMAL').toUpperCase();
-    return intensity === 'BAIXA' ? 0.65 : intensity === 'ALTA' ? 1.2 : 1;
+    const level = this.effectLevel();
+    if (level === 'EMERGENCY') return 0.35;
+    if (level === 'LOW') return 0.55;
+    if (level === 'HIGH') return 1.15;
+    return 1;
+  }
+
+  activeLimit() {
+    const level = this.effectLevel();
+    if (level === 'EMERGENCY') return 42;
+    if (level === 'LOW') return 72;
+    if (level === 'HIGH') return 150;
+    return 110;
   }
 
   makeSparkTexture() {
@@ -26,7 +50,8 @@ export class VFXManager {
   }
 
   acquire() {
-    let dot = this.pool.find((item) => !item.active);
+    if (this.activeCount >= this.activeLimit()) return null;
+    let dot = this.free.pop();
     if (!dot && this.pool.length < this.maxPool) {
       dot = this.scene.add.image(-100, -100, 'neon-spark')
         .setVisible(false)
@@ -35,13 +60,19 @@ export class VFXManager {
         .setBlendMode(Phaser.BlendModes.ADD);
       this.pool.push(dot);
     }
-    return dot || null;
+    if (!dot) return null;
+    dot.__neonLeased = true;
+    this.activeCount += 1;
+    return dot;
   }
 
   release(dot) {
-    if (!dot) return;
+    if (!dot || !dot.__neonLeased) return;
+    dot.__neonLeased = false;
+    this.activeCount = Math.max(0, this.activeCount - 1);
     this.scene.tweens.killTweensOf(dot);
     dot.setVisible(false).setActive(false).setPosition(-100, -100).setScale(1).setAlpha(1).setTint(0xffffff);
+    this.free.push(dot);
   }
 
   burst(x, y, color = 0x2cefff, quantity = 18, distance = 100, duration = 560) {
@@ -116,11 +147,15 @@ export class VFXManager {
 
   attachBloom(target, strength = 1.15) {
     if (!target || this.bloomed.has(target)) return;
+    const level = this.effectLevel();
+    const players = Number(this.scene?.state?.players?.length || 0);
+    const vertical = typeof location !== 'undefined' && (new URLSearchParams(location.search).get('broadcast') === 'vertical' || innerHeight > innerWidth * 1.25);
+    if (vertical || level === 'LOW' || level === 'EMERGENCY' || players >= 8) return;
     try {
       target.postFX?.addBloom?.(0xffffff, 1, 1, 1.2, strength, 4);
       this.bloomed.add(target);
     } catch {
-      // Canvas renderer and some GPUs do not expose postFX. The additive glow remains the fallback.
+      // Canvas renderer and some GPUs do not expose postFX. Additive glow remains the fallback.
     }
   }
 
@@ -206,5 +241,7 @@ export class VFXManager {
   destroy() {
     for (const dot of this.pool) dot.destroy();
     this.pool = [];
+    this.free = [];
+    this.activeCount = 0;
   }
 }

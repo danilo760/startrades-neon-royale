@@ -12,7 +12,7 @@ export function decorateCombatant(scene, fighter, player) {
     const accent = scene.add.graphics();
     drawPattern(accent, preset);
     fighter.container.addAt(ring, 4); fighter.container.addAt(accent, 6); fighter.container.addAt(core, 7);
-    Object.assign(fighter, { materialRing: ring, materialCore: core, materialAccent: accent, materialId: preset.id });
+    Object.assign(fighter, { materialRing: ring, materialCore: core, materialAccent: accent, materialId: preset.id, materialSignature: '' });
     scene.vfx?.attachBloom?.(ring, visualQualityFor(requestedVisualMode(scene)).bloom);
   }
   applyMaterial(scene, fighter, player, preset);
@@ -47,6 +47,9 @@ function applyMaterial(scene, fighter, player, preset) {
   const primary = starActive ? 0xffd24d : teamMode ? teamColor : preset.primary;
   const secondary = starActive ? 0xfff3b0 : preset.secondary;
   const quality = visualQualityFor(requestedVisualMode(scene));
+  const signature = `${preset.id}:${teamMode ? player.team || 'blue' : 'solo'}:${starActive ? 1 : 0}:${quality.id}`;
+  if (fighter.materialSignature === signature) return;
+  fighter.materialSignature = signature;
   fighter.ball.setFillStyle(primary, 1).setStrokeStyle(quality.id === 'EMERGENCY' ? 3 : 4, secondary, 0.82);
   fighter.glow.setFillStyle(primary, quality.id === 'EMERGENCY' ? 0.045 : quality.id === 'LOW' ? 0.07 : 0.1).setStrokeStyle(2, primary, quality.id === 'EMERGENCY' ? 0.18 : 0.38);
   fighter.materialRing?.setStrokeStyle(starActive ? 3 : 2, secondary, quality.id === 'EMERGENCY' ? 0.24 : starActive ? 0.8 : 0.5);
@@ -58,10 +61,9 @@ function applyMaterial(scene, fighter, player, preset) {
   fighter.materialPreset = { ...preset, trail: starActive ? 0xffd24d : teamMode ? teamColor : preset.trail };
 }
 
-export function updateCombatantVisuals(scene, fighter, time) {
+export function updateCombatantVisuals(scene, fighter, time, quality = visualQualityFor(requestedVisualMode(scene))) {
   if (!fighter?.data?.alive || !fighter.materialPreset) return;
   const preset = fighter.materialPreset;
-  const quality = visualQualityFor(requestedVisualMode(scene));
   const pulseScale = quality.id === 'EMERGENCY' ? 0.35 : quality.id === 'LOW' ? 0.65 : 1;
   const pulse = 1 + Math.sin(time / 260 + fighter.container.x * 0.01) * ((preset.pulse || 1.04) - 1) * pulseScale;
   fighter.materialRing?.setScale(pulse);

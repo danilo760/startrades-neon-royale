@@ -17,6 +17,14 @@ export const ARENA_THEMES = Object.freeze({
   retro: { id: 'LAVA_CORE', label: 'LAVA CORE', background: 0x120302, floor: 0x1b0906, primary: 0xff8a2b, secondary: 0xffd24d, danger: 0xff315f, ambient: 0x5a170d, pattern: 'lava' },
 });
 
+const QUALITY_PRESETS = Object.freeze({
+  EMERGENCY: Object.freeze({ id: 'EMERGENCY', ambientCount: 4, trailInterval: 280, decorationAlpha: 0.22, bloom: 0.18, secondaryVfx: false }),
+  LOW: Object.freeze({ id: 'LOW', ambientCount: 9, trailInterval: 200, decorationAlpha: 0.4, bloom: 0.42, secondaryVfx: false }),
+  REDUCED: Object.freeze({ id: 'REDUCED', ambientCount: 14, trailInterval: 150, decorationAlpha: 0.55, bloom: 0.65, secondaryVfx: true }),
+  NORMAL: Object.freeze({ id: 'NORMAL', ambientCount: 26, trailInterval: 100, decorationAlpha: 0.8, bloom: 0.85, secondaryVfx: true }),
+  HIGH: Object.freeze({ id: 'HIGH', ambientCount: 38, trailInterval: 72, decorationAlpha: 1, bloom: 1.1, secondaryVfx: true }),
+});
+
 const hashString = (value = '') => {
   let hash = 2166136261;
   for (const char of String(value)) { hash ^= char.charCodeAt(0); hash = Math.imul(hash, 16777619); }
@@ -41,9 +49,9 @@ export function requestedVisualMode(scene) {
 
 export function visualQualityFor(setting = 'NORMAL') {
   const value = String(setting || 'NORMAL').toUpperCase();
-  if (value === 'EMERGENCY') return { id: 'EMERGENCY', ambientCount: 4, trailInterval: 280, decorationAlpha: 0.22, bloom: 0.18, secondaryVfx: false };
-  if (value === 'LOW') return { id: 'LOW', ambientCount: 9, trailInterval: 200, decorationAlpha: 0.4, bloom: 0.42, secondaryVfx: false };
-  if (['BAIXA', 'REDUCED'].includes(value)) return { id: 'REDUCED', ambientCount: 14, trailInterval: 150, decorationAlpha: 0.55, bloom: 0.65, secondaryVfx: true };
-  if (['ALTA', 'HIGH'].includes(value)) return { id: 'HIGH', ambientCount: 38, trailInterval: 72, decorationAlpha: 1, bloom: 1.1, secondaryVfx: true };
-  return { id: 'NORMAL', ambientCount: 26, trailInterval: 100, decorationAlpha: 0.8, bloom: 0.85, secondaryVfx: true };
+  if (value === 'EMERGENCY') return QUALITY_PRESETS.EMERGENCY;
+  if (value === 'LOW') return QUALITY_PRESETS.LOW;
+  if (['BAIXA', 'REDUCED'].includes(value)) return QUALITY_PRESETS.REDUCED;
+  if (['ALTA', 'HIGH'].includes(value)) return QUALITY_PRESETS.HIGH;
+  return QUALITY_PRESETS.NORMAL;
 }

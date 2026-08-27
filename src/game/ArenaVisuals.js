@@ -2,6 +2,10 @@ import Phaser from 'phaser';
 import { arenaPresetFor, requestedVisualMode, visualQualityFor } from './visualPresets.js';
 
 const inside = (scene, object) => { scene.arenaDecor.add(object); return object; };
+const clearArenaDecor = (scene) => {
+  for (const child of scene.arenaDecor?.list || []) scene.tweens.killTweensOf(child);
+  scene.arenaDecor?.removeAll(true);
+};
 
 export function createArenaVisuals(scene) {
   scene.cameras.main.setBackgroundColor('#05020b');
@@ -23,7 +27,7 @@ export function applyArenaVisuals(scene, name = 'default', force = false) {
   scene.currentArenaQuality = quality.id;
   scene.cameras.main.setBackgroundColor(theme.background);
   scene.arenaTint?.setFillStyle(theme.primary, 0.025);
-  scene.arenaBase.clear(); scene.arenaForeground.clear(); scene.arenaDecor.removeAll(true);
+  scene.arenaBase.clear(); scene.arenaForeground.clear(); clearArenaDecor(scene);
   const base = scene.arenaBase;
   base.fillStyle(theme.background, 1).fillRect(0, 0, 1280, 720);
   base.fillStyle(theme.floor, 0.98).fillRoundedRect(35, 35, 1210, 650, 32);
@@ -96,4 +100,4 @@ export function drawArenaStorm(scene, value) {
   if (quality.secondaryVfx) scene.stormRing.lineStyle(1, 0xffffff, 0.28).strokeCircle(640, 360, radius + thickness / 2);
 }
 
-export function destroyArenaVisuals(scene) { scene.arenaDecor?.removeAll(true); }
+export function destroyArenaVisuals(scene) { clearArenaDecor(scene); }

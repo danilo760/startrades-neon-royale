@@ -5,6 +5,7 @@ import { destroyColossus, renderColossusAttack, syncColossus } from './ColossusV
 import { playLayeredSfx, stopAudioLayers } from './AudioLayers.js';
 import { ArenaDirector } from './ArenaDirector.js';
 import { PerformanceWatchdog } from './PerformanceWatchdog.js';
+import { visualQualityFor } from './visualPresets.js';
 
 const bossAttackSound = (pattern = '') => /METEOR/i.test(pattern) ? 'meteor' : /LASER|BEAM/i.test(pattern) ? 'laser-charge' : /OVERLOAD/i.test(pattern) ? 'boss-overload' : 'boss-phase';
 const normalizeManualQuality = (value = 'NORMAL') => {
@@ -14,10 +15,16 @@ const normalizeManualQuality = (value = 'NORMAL') => {
   if (mode === 'EMERGENCY') return 'EMERGENCY';
   return 'NORMAL';
 };
-const selectedPerformanceMode = (scene) => {
+const verticalViewport = () => typeof window !== 'undefined' && (new URLSearchParams(location.search).get('broadcast') === 'vertical' || innerHeight > innerWidth * 1.25);
+const selectedPerformanceMode = (scene, now = performance.now()) => {
+  if (scene.performanceModeCache && now - scene.performanceModeReadAt < 750) return scene.performanceModeCache;
   const stored = typeof localStorage !== 'undefined' ? String(localStorage.getItem('neon-effect-mode') || '').toUpperCase() : '';
-  if (['AUTO', 'BAIXA', 'NORMAL', 'ALTA', 'LOW', 'HIGH', 'EMERGENCY'].includes(stored)) return stored;
-  return String(scene.state?.settings?.effectIntensity || 'AUTO').toUpperCase();
+  const mode = ['AUTO', 'BAIXA', 'NORMAL', 'ALTA', 'LOW', 'HIGH', 'EMERGENCY'].includes(stored)
+    ? stored
+    : String(scene.state?.settings?.effectIntensity || 'AUTO').toUpperCase();
+  scene.performanceModeCache = mode;
+  scene.performanceModeReadAt = now;
+  return mode;
 };
 
 export class GameScene extends BaseGameScene {
@@ -25,9 +32,14 @@ export class GameScene extends BaseGameScene {
     super(bridge);
     this.arenaDirector = new ArenaDirector();
     this.presentation = this.arenaDirector.status();
-    this.performanceWatchdog = new PerformanceWatchdog();
+    const initialQuality = verticalViewport() ? 'LOW' : 'NORMAL';
+    this.performanceWatchdog = new PerformanceWatchdog({ initialLevel: initialQuality });
     this.performanceDiagnostics = this.performanceWatchdog.status();
-    this.effectiveEffectIntensity = 'NORMAL';
+    this.effectiveEffectIntensity = initialQuality;
+    this.performanceModeCache = '';
+    this.performanceModeReadAt = -Infinity;
+    this.performanceDebug = typeof location !== 'undefined' && new URLSearchParams(location.search).get('debug') === 'performance';
+    this.lastPerformancePublishAt = -Infinity;
   }
 
   drawArena() { createArenaVisuals(this); }
@@ -82,29 +94,32 @@ export class GameScene extends BaseGameScene {
     });
   }
 
-  updatePerformance(delta) {
-    const children = this.children?.list?.length || 0;
-    const projectiles = Number(this.projectiles?.children?.size || this.projectilePool?.children?.size || this.shots?.size || 0);
+  updatePerformance(delta, time = performance.now()) {
+    const projectiles = Array.isArray(this.projectilePool) ? this.projectilePool.reduce((total, item) => total + (item.active ? 1 : 0), 0) : 0;
     const diagnostics = this.performanceWatchdog.sample(delta, {
       players: this.state?.players?.length || 0,
       projectiles,
-      vfx: children,
+      vfx: this.vfx?.activeCount || 0,
     });
     this.performanceDiagnostics = diagnostics;
-    const mode = selectedPerformanceMode(this);
+    const mode = selectedPerformanceMode(this, time);
     const next = mode === 'AUTO' ? diagnostics.level : normalizeManualQuality(mode);
     const qualityChanged = next !== this.effectiveEffectIntensity;
     this.effectiveEffectIntensity = next;
     if (qualityChanged && this.arenaBase) applyArenaVisuals(this, this.state?.settings?.arenaBackground || 'default');
-    if (typeof window !== 'undefined') window.__NEON_PERF__ = { ...diagnostics, requestedMode: mode, effectiveLevel: next, arenaDirector: this.presentation?.level || 'CALM' };
+    if (this.performanceDebug && typeof window !== 'undefined' && time - this.lastPerformancePublishAt >= 400) {
+      this.lastPerformancePublishAt = time;
+      window.__NEON_PERF__ = { ...diagnostics, requestedMode: mode, effectiveLevel: next, arenaDirector: this.presentation?.level || 'CALM' };
+    }
+    return visualQualityFor(next);
   }
 
   update(time, delta) {
     super.update(time, delta);
     if (!this.state || this.juice?.isHitStopped()) return;
     this.presentation = this.arenaDirector.update(this.state);
-    this.updatePerformance(delta);
-    for (const fighter of this.fighters.values()) updateCombatantVisuals(this, fighter, time);
+    const quality = this.updatePerformance(delta, time);
+    for (const fighter of this.fighters.values()) updateCombatantVisuals(this, fighter, time, quality);
   }
 
   cleanupScene() {

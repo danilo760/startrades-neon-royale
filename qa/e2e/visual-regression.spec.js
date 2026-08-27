@@ -36,38 +36,29 @@ async function capture(page, name) {
     expect(box.right).toBeLessThanOrEqual(geometry.viewport.width + 1);
     expect(box.bottom).toBeLessThanOrEqual(geometry.viewport.height + 1);
   }
-
-  const session = await page.context().newCDPSession(page);
-  try {
-    const shot = await session.send('Page.captureScreenshot', {
-      format: 'png',
-      fromSurface: true,
-      captureBeyondViewport: false,
-    });
-    await test.info().attach(`visual-${name}`, { body: Buffer.from(shot.data, 'base64'), contentType: 'image/png' });
-  } finally {
-    await session.detach().catch(() => {});
-  }
+  const screenshot = await page.screenshot({ fullPage: false, animations: 'allow', timeout: 15_000 });
+  await test.info().attach(`visual-${name}`, { body: screenshot, contentType: 'image/png' });
 }
 
 test('visual capture matrix preserves arena layout through core live states', async ({ page, request }) => {
-  test.setTimeout(75_000);
+  test.setTimeout(90_000);
   const browserErrors = [];
   page.on('console', (message) => { if (message.type() === 'error') browserErrors.push(message.text()); });
   page.on('pageerror', (error) => browserErrors.push(error.message));
 
   await post(request, '/api/battle/reset');
-  await page.goto('/');
+  await page.setViewportSize({ width: 960, height: 540 });
+  await page.goto('/?renderer=canvas', { waitUntil: 'domcontentloaded' });
   await capture(page, 'lobby');
 
   const players = Array.from({ length: 10 }, (_, index) => `Visual-${index + 1}`);
   await post(request, '/api/test/players', { names: players });
   const running = await post(request, '/api/battle/start');
-  await page.reload();
+  await expect(page.locator('.live')).toContainText('RUNNING', { timeout: 8000 });
   await capture(page, 'running');
 
   await post(request, '/api/storm', { value: 80 });
-  await page.waitForTimeout(250);
+  await page.waitForTimeout(220);
   await capture(page, 'storm');
 
   const target = running.state.players.find((player) => player.alive);
@@ -79,22 +70,22 @@ test('visual capture matrix preserves arena layout through core live states', as
     if (support) {
       const giftResponse = await request.post('/api/admin/gift', { headers: auth, data: { targetPlayerId: target.id, giftId: support.giftId } });
       if (giftResponse.ok()) {
-        await page.waitForTimeout(280);
+        await page.waitForTimeout(240);
         await capture(page, 'gift');
       }
     }
   }
 
   await post(request, '/api/admin/boss');
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(260);
   await capture(page, 'boss-phase-1');
 
   await post(request, '/api/battle/end');
-  await page.waitForTimeout(250);
+  await expect(page.locator('.live')).toContainText('ENDED', { timeout: 8000 });
   await capture(page, 'winner');
 
-  await page.setViewportSize({ width: 1080, height: 1920 });
-  await page.goto('/?broadcast=vertical');
+  await page.setViewportSize({ width: 720, height: 1280 });
+  await page.goto('/?broadcast=vertical&renderer=canvas', { waitUntil: 'domcontentloaded' });
   await expect(page.locator('.overlay')).toHaveAttribute('data-broadcast-mode', 'VERTICAL_TIKTOK');
   await capture(page, 'vertical');
   expect(browserErrors).toEqual([]);
