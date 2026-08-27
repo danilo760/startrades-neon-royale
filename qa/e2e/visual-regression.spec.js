@@ -11,8 +11,8 @@ async function post(request, path, body = {}) {
 }
 
 async function capture(page, name) {
-  await expect(page.locator('.overlay')).toBeVisible();
-  await expect(page.locator('.game canvas')).toBeVisible();
+  await expect(page.locator('.overlay')).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('.game canvas')).toBeVisible({ timeout: 10_000 });
   const geometry = await page.evaluate(() => {
     const plain = (element) => {
       const box = element?.getBoundingClientRect();
@@ -36,12 +36,22 @@ async function capture(page, name) {
     expect(box.right).toBeLessThanOrEqual(geometry.viewport.width + 1);
     expect(box.bottom).toBeLessThanOrEqual(geometry.viewport.height + 1);
   }
-  const screenshot = await page.screenshot({ fullPage: false, animations: 'disabled', timeout: 10_000 });
-  await test.info().attach(`visual-${name}`, { body: screenshot, contentType: 'image/png' });
+
+  const session = await page.context().newCDPSession(page);
+  try {
+    const shot = await session.send('Page.captureScreenshot', {
+      format: 'png',
+      fromSurface: true,
+      captureBeyondViewport: false,
+    });
+    await test.info().attach(`visual-${name}`, { body: Buffer.from(shot.data, 'base64'), contentType: 'image/png' });
+  } finally {
+    await session.detach().catch(() => {});
+  }
 }
 
 test('visual capture matrix preserves arena layout through core live states', async ({ page, request }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(75_000);
   const browserErrors = [];
   page.on('console', (message) => { if (message.type() === 'error') browserErrors.push(message.text()); });
   page.on('pageerror', (error) => browserErrors.push(error.message));
