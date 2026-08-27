@@ -12,6 +12,12 @@ const bossPhase = (boss = {}) => {
   if (ratio <= 0.66) return { id: 2, name: 'FÚRIA NEON' };
   return { id: 1, name: 'DESPERTAR' };
 };
+const broadcastMode = () => {
+  const requested = new URLSearchParams(location.search).get('broadcast');
+  if (requested === 'vertical') return 'vertical';
+  if (requested === 'landscape') return 'landscape';
+  return window.innerHeight > window.innerWidth * 1.25 ? 'vertical' : 'landscape';
+};
 
 export function Overlay() {
   const host = useRef(null);
@@ -26,6 +32,7 @@ export function Overlay() {
   const [activeGift, setActiveGift] = useState(null);
   const [killfeed, setKillfeed] = useState([]);
   const [clock, setClock] = useState(Date.now());
+  const [mode] = useState(broadcastMode);
 
   useEffect(() => {
     const timer = setInterval(() => setClock(Date.now()), 200);
@@ -84,11 +91,7 @@ export function Overlay() {
       };
       socket.onmessage = ({ data }) => {
         let event;
-        try {
-          event = JSON.parse(data);
-        } catch {
-          return;
-        }
+        try { event = JSON.parse(data); } catch { return; }
         const next = event.state;
         if (next) {
           setState({ ...next });
@@ -96,10 +99,7 @@ export function Overlay() {
           setMusic(next.settings?.music !== false);
           setSound(next.settings?.sound !== false);
         }
-        if (event.type === 'gift:applied') {
-          scene.triggerGift(event.payload);
-          showGift({ ...event.payload, status: 'applied' });
-        }
+        if (event.type === 'gift:applied') { scene.triggerGift(event.payload); showGift({ ...event.payload, status: 'applied' }); }
         if (event.type === 'gift:pending') showGift({ ...event.payload, status: 'pending' });
         if (event.type === 'gift:rejected' && event.payload?.visualOnly) showGift({ ...event.payload, status: 'neutral', giftName: event.payload.giftName || 'Gift desconhecido' });
         if (event.type === 'combat:shot') scene.renderCombatShot(event.payload);
@@ -116,13 +116,8 @@ export function Overlay() {
           setSpeech(event.payload.text);
           setEmotion(event.payload.emotion || 'hype');
           speak(event.payload.text, {
-            mode: currentSettings.voiceMode || 'male',
-            emotion: event.payload.emotion || 'hype',
-            priority: event.payload.priority,
-            priorityLevel: event.payload.priorityLevel,
-            path: event.payload.path,
-            eventType: event.payload.eventType,
-            createdAt: event.payload.createdAt,
+            mode: currentSettings.voiceMode || 'male', emotion: event.payload.emotion || 'hype', priority: event.payload.priority,
+            priorityLevel: event.payload.priorityLevel, path: event.payload.path, eventType: event.payload.eventType, createdAt: event.payload.createdAt,
           });
         }
       };
@@ -142,13 +137,9 @@ export function Overlay() {
   }, []);
 
   const enable = () => {
-    unlockAudio();
-    setAudio(true);
-    setMusic(state.settings?.music !== false);
-    setSound(state.settings?.sound !== false);
+    unlockAudio(); setAudio(true); setMusic(state.settings?.music !== false); setSound(state.settings?.sound !== false);
     const text = 'Som ativado! Prepare-se, porque a arena vai tremer!';
-    setSpeech(text);
-    setEmotion('battle');
+    setSpeech(text); setEmotion('battle');
     speak(text, { mode: state.settings?.voiceMode || 'male', emotion: 'battle', priority: true, eventType: 'audio:enabled' });
   };
 
@@ -168,7 +159,7 @@ export function Overlay() {
       ? `@${activeGift.senderUsername} enviou ${activeGift.giftName || 'Gift'} — bônus aguardando a próxima entrada`
       : activeGift ? `@${activeGift.senderUsername || 'espectador'} enviou ${activeGift.giftName || 'Gift'} — efeito não configurado` : '';
 
-  return <main className="overlay">
+  return <main className={`overlay broadcast-${mode}`} data-broadcast-mode={mode === 'vertical' ? 'VERTICAL_TIKTOK' : 'LANDSCAPE'}>
     <div className="broadcastFrame" />
     <header className="overlayHeader">
       <div className="overlayBrand"><span className="brandMark">S</span><div><small>@STARTRADES01 APRESENTA</small><h1>NEON <em>ROYALE</em></h1></div></div>
@@ -190,11 +181,7 @@ export function Overlay() {
 
     {kings.length > 0 && <aside className="arenaKings">
       <div className="kingsTitle"><span>♛</span><div><small>REIS DA ARENA</small><strong>TOP 3 ACUMULADO</strong></div></div>
-      {kings.map((king, index) => <div className={`kingRow king-${index + 1}`} key={king.platformUserId || king.id}>
-        <b>{index + 1}</b>
-        <span><strong>@{king.username || king.platformUserId}</strong><small>{king.wins || 0} vitórias • {king.roundsPlayed || 0} rodadas</small></span>
-        <em>{king.score || 0}</em>
-      </div>)}
+      {kings.map((king, index) => <div className={`kingRow king-${index + 1}`} key={king.platformUserId || king.id}><b>{index + 1}</b><span><strong>@{king.username || king.platformUserId}</strong><small>{king.wins || 0} vitórias • {king.roundsPlayed || 0} rodadas</small></span><em>{king.score || 0}</em></div>)}
     </aside>}
 
     <aside className="ranking"><div className="panelHeading"><span>CLASSIFICAÇÃO</span><b>AO VIVO</b></div>{state.players.slice(0, 6).map((player, index) => <div className={`rankRow ${!player.alive ? 'eliminated' : ''}`} key={player.id}><b>{index + 1}</b><span><strong>@{player.username || player.id}</strong><small>{player.eliminations} eliminações</small></span><em>{player.score}</em></div>)}</aside>
@@ -205,11 +192,7 @@ export function Overlay() {
     <section className={`agent emotion-${emotion}`}><div className="agentOrb"><span>N</span><i /><i /><i /></div><div><small>APRESENTADOR NOVA</small><p>{speech}</p></div>{!audio && <button onClick={enable}>ATIVAR SOM</button>}</section>
 
     {activeGift && <div className={`giftCinematicBackdrop tier-${activeGift.tier || 'support'}`} />}
-    {activeGift && <section className={`powerBanner cinematicGift tier-${activeGift.tier || 'support'}`} style={{ '--power': tierColor(activeGift) }}>
-      <span>{activeGift.tier === 'premium' ? '✦' : activeGift.tier === 'event' ? '◆' : activeGift.status === 'neutral' ? '·' : '◇'}</span>
-      <div><small>{activeGift.status === 'pending' ? 'GIFT PENDENTE' : activeGift.status === 'neutral' ? 'GIFT RECEBIDO' : activeGift.tier === 'premium' ? 'MOMENTO LENDÁRIO' : 'INTERAÇÃO DA LIVE'}</small><strong>{giftText}</strong><em>{activeGift.source === 'control-panel' ? 'SIMULAÇÃO • NÃO É RECEITA REAL' : 'TIKTOK LIVE'}</em></div>
-      <b>{activeGift.tier === 'premium' ? 'PREMIUM' : activeGift.tier === 'event' ? 'EVENTO' : 'GIFT'}</b>
-    </section>}
+    {activeGift && <section className={`powerBanner cinematicGift tier-${activeGift.tier || 'support'}`} style={{ '--power': tierColor(activeGift) }}><span>{activeGift.tier === 'premium' ? '✦' : activeGift.tier === 'event' ? '◆' : activeGift.status === 'neutral' ? '·' : '◇'}</span><div><small>{activeGift.status === 'pending' ? 'GIFT PENDENTE' : activeGift.status === 'neutral' ? 'GIFT RECEBIDO' : activeGift.tier === 'premium' ? 'MOMENTO LENDÁRIO' : 'INTERAÇÃO DA LIVE'}</small><strong>{giftText}</strong><em>{activeGift.source === 'control-panel' ? 'SIMULAÇÃO • NÃO É RECEITA REAL' : 'TIKTOK LIVE'}</em></div><b>{activeGift.tier === 'premium' ? 'PREMIUM' : activeGift.tier === 'event' ? 'EVENTO' : 'GIFT'}</b></section>}
 
     {state.phase === 'lobby' && <div className="callout"><small>ENTRE NA PRÓXIMA BATALHA</small><b>Digite <em>!entrar</em></b><span>Gifts ativam efeitos de entretenimento sem prêmio real</span><i /></div>}
     {state.winner && <div className={`winner team-${state.winner.team || 'solo'}`}><div className="winnerCrown">✦</div><small>{state.winner.type === 'team' ? 'EQUIPE CAMPEÃ' : 'CAMPEÃO'} DA RODADA {state.round}</small><strong>{winnerLabel}</strong><span>{state.winner.survivors != null ? `${state.winner.survivors} sobreviventes • ` : ''}{state.winner.eliminations} eliminações • {state.winner.score} pontos</span>{state.phase === 'ended' && <em>PRÓXIMA RODADA EM {intermission}s</em>}<div className="winnerLine" /></div>}
