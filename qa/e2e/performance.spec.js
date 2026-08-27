@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test('Performance AUTO is configurable from control and persisted locally for broadcast tabs', async ({ page }) => {
   await page.goto('/control');
-  const selector = page.getByLabel('Effect Intensity');
+  const selector = page.getByLabel('Effect Intensity', { exact: true });
   await expect(selector).toBeVisible();
   await expect(selector).toHaveValue('AUTO');
   await selector.selectOption('BAIXA');
