@@ -10,6 +10,15 @@ def replace_once(path, old, new):
     file.write_text(text.replace(old, new, 1), encoding='utf-8')
 
 
+def replace_exact_count(path, old, new, expected):
+    file = Path(path)
+    text = file.read_text(encoding='utf-8')
+    count = text.count(old)
+    if count != expected:
+        raise SystemExit(f'{path}: expected {expected} matches, found {count}: {old[:90]!r}')
+    file.write_text(text.replace(old, new), encoding='utf-8')
+
+
 # 1) The live overlay must instantiate the extended scene that owns the watchdog.
 replace_once(
     'src/overlay/Overlay.jsx',
@@ -47,10 +56,11 @@ replace_once(
 )
 
 # 4) Make AUTO a first-class server setting and snapshot value.
-replace_once(
+replace_exact_count(
     'server/index.js',
     "state.settings.effectIntensity ||= 'NORMAL';",
     "state.settings.effectIntensity ||= 'AUTO';",
+    2,
 )
 replace_once(
     'server/index.js',
