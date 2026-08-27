@@ -61,6 +61,7 @@ test('HTTP/WebSocket simulation covers auth, hot gift mapping, lifecycle, boss, 
 
     result = await request(base, '/api/battle/start', token);
     assert.equal(result.response.status, 200); assert.equal(result.data.state.phase, 'running');
+    const spawnGraceUntil = Math.max(...result.data.state.players.map((player) => Number(player.spawnInvulnerableUntil) || 0));
     await sleep(300);
     result = await request(base, '/api/battle/start', token);
     assert.equal(result.response.status, 409); assert.equal(result.data.error, 'battle-not-in-lobby');
@@ -76,7 +77,7 @@ test('HTTP/WebSocket simulation covers auth, hot gift mapping, lifecycle, boss, 
     await sleep(300); // Preserve the production admin rate limit instead of bypassing it in integration.
     result = await request(base, '/api/admin/gift-mappings', token, { ...mappingRead.data.mappings.find((mapping) => mapping.giftId === '5655'), giftId: '5655', giftName: 'Rose', enabled: true, powerId: 'chain-lightning', targetMode: 'ENEMY', magnitude: 12, durationMs: 700, cooldownMs: 0, visualPreset: 'chain-lightning', soundPreset: 'lightning', narrationPreset: 'hype' });
     assert.equal(result.response.status, 200); assert.equal(result.data.mapping.powerId, 'chain-lightning');
-    await sleep(300);
+    await sleep(Math.max(300, spawnGraceUntil - Date.now() + 50));
     result = await request(base, '/api/admin/gift', token, { targetPlayerId, giftId: '5655' });
     assert.equal(result.response.status, 200); assert.equal(result.data.result.powerId, 'chain-lightning');
 
