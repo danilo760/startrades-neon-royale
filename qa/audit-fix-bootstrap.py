@@ -45,6 +45,11 @@ for replacement in replacements:
     if old not in runner:
         raise RuntimeError('qa/replay-runner.js: missing replay assertion placeholder')
     runner = runner.replace(old, replacement, 1)
+round_anchor = '  reset();\n  return withDeterministicRuntime(replay.roundSeed, replay.startedAt, (runtime) => {'
+round_replacement = '  reset();\n  state.round = replay.round;\n  state.roundId = replay.roundId;\n  return withDeterministicRuntime(replay.roundSeed, replay.startedAt, (runtime) => {'
+if runner.count(round_anchor) != 1:
+    raise RuntimeError(f'qa/replay-runner.js: expected one replay round anchor, got {runner.count(round_anchor)}')
+runner = runner.replace(round_anchor, round_replacement, 1)
 write('qa/replay-runner.js', runner)
 
 Path(__file__).unlink(missing_ok=True)
