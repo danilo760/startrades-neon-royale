@@ -15,6 +15,7 @@
     "test:panel": "playwright test",
     "test:chaos": "NODE_ENV=test MOCK_MODE=true QA_CHAOS_ACK=I_UNDERSTAND_LOCAL_ONLY node qa/chaos-bot.js --i-understand-chaos",
     "replay": "node qa/replay-runner.js",
+    "lint": "eslint .",
     "check": "node --check server/index.js && node --check server/engine.js && node --check server/gifts.js && node --check server/admin.js && node --check server/leaderboard.js && node --check server/replay.js && node --check server/snapshot.js && node --check server/telemetry.js && node --check server/powers/BossPhaseDirector.js && node --check server/powers/ComboManager.js && node --check server/powers/GiftCinematicDirector.js && node --check server/powers/GiftMappingService.js && node --check server/powers/LiveInteractionManager.js && node --check server/powers/NarratorDirector.js && node --check server/powers/PowerExecutor.js && node --check server/powers/PowerLimits.js && node --check server/powers/PowerRegistry.js && node --check server/powers/RivalryManager.js && node --check qa/gameplay-bot.js && node --check qa/chaos-bot.js && node --check qa/replay-runner.js && npm test && vite build"
   },
   "dependencies": {
@@ -31,6 +32,10 @@
     "ws": "^8.18.3"
   },
   "devDependencies": {
-    "@playwright/test": "^1.55.1"
+    "@playwright/test": "^1.55.1",
+    "eslint": "^9.35.0",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^16.3.0"
   }
 }
