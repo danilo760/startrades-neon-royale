@@ -70,7 +70,17 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Chromium system dependencies
+        run: npx playwright install-deps chromium
+      - name: Install Playwright Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium
       - run: npm run test:panel
       - name: Upload visual and browser QA artifacts
         if: always()
@@ -94,85 +104,3 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:gameplay:1000
-
-  audit-fix-bootstrap:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/codex/neon-royale' && contains(github.event.head_commit.message, '[audit-fix-bootstrap]')
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Amend bootstrap lint cleanup
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('qa/audit-fix-bootstrap.py')
-          text = path.read_text(encoding='utf-8')
-          marker = "# Replay runner can now replay both legacy GIFT and mapped PowerExecutor GIFT paths.\n"
-          insertion = "replace_once('qa/replay-runner.js', \"import { assertValidState } from './invariants.js';\\n\", '')\nreplace_between('qa/replay-runner.js', 'const pickOutcome', 'function assertExpected', '')\n\n"
-          if marker not in text:
-              raise SystemExit('replay cleanup insertion marker missing')
-          path.write_text(text.replace(marker, insertion + marker, 1), encoding='utf-8')
-          PY
-      - name: Apply reviewed audit fixes
-        run: python3 qa/audit-fix-bootstrap.py
-      - name: ESLint final audit
-        run: npm run lint
-      - name: UTF-8 and mojibake audit
-        run: |
-          node --input-type=module <<'NODE'
-          import { readdirSync, readFileSync, statSync } from 'node:fs';
-          import { extname, join } from 'node:path';
-          const roots = ['server', 'src'];
-          const extensions = new Set(['.js', '.jsx', '.css', '.json', '.html', '.md']);
-          const files = [];
-          const walk = (dir) => {
-            for (const name of readdirSync(dir)) {
-              const path = join(dir, name);
-              if (statSync(path).isDirectory()) walk(path);
-              else if (extensions.has(extname(path))) files.push(path);
-            }
-          };
-          roots.forEach(walk);
-          const decoder = new TextDecoder('utf-8', { fatal: true });
-          const issues = [];
-          const mojibakePatterns = [
-            [/\uFFFD/u, 'replacement character'],
-            [/Ã[\u0080-\u00BF]/u, 'misdecoded UTF-8 after Ã'],
-            [/Â[\u0080-\u00BF]/u, 'misdecoded UTF-8 after Â'],
-            [/ð(?:[\u0080-\u00BF]|Ÿ|ƒ|œ|™|€)/u, 'misdecoded UTF-8 after ð'],
-          ];
-          for (const file of files) {
-            let text;
-            try { text = decoder.decode(readFileSync(file)); }
-            catch (error) { issues.push(`${file}: invalid UTF-8: ${error.message}`); continue; }
-            for (const [pattern, label] of mojibakePatterns) {
-              if (pattern.test(text)) issues.push(`${file}: suspicious ${label}`);
-            }
-          }
-          if (issues.length) {
-            console.error(issues.join('\n'));
-            process.exit(1);
-          }
-          console.log(`ENCODING_OK ${files.length} text files scanned`);
-          NODE
-      - name: Full regression validation
-        run: RUN_INTEGRATION_TESTS=true npm run check
-      - name: Dependency audit
-        run: npm audit --audit-level=high
-      - name: Diff hygiene
-        run: git diff --check
-      - name: Commit audited fixes
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout HEAD -- .github/workflows/ci.yml
-          git add -A
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m "chore: add eslint and harden audited paths [skip render]"
-          git push origin HEAD:codex/neon-royale
