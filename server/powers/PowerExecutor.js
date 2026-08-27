@@ -234,7 +234,7 @@ export class PowerExecutor {
     if (power.id === 'meteor') {
       const meteorTarget = target || alive[Math.floor(this.random() * alive.length)];
       if (!meteorTarget) return { applied: false, reason: 'no-target' };
-      const warningMs = Math.max(1400, Math.min(1400, limits.durationMs || 2000));
+      const warningMs = Math.max(1400, Math.min(2400, limits.durationMs || 2000));
       const hazard = { id: randomUUID(), type: 'meteor', x: meteorTarget.x, y: meteorTarget.y, targetPlayerId: meteorTarget.id, radius: 110, damage: Math.min(24, limits.magnitude), createdAt: startedAt, impactAt: startedAt + warningMs, expiresAt: startedAt + warningMs + 1400, visualEffect: limits.visualPreset, resolved: false };
       this.state.hazards = [...(this.state.hazards || []).slice(-11), hazard];
       return { applied: true, hazardId: hazard.id, hazardTargetPlayerId: meteorTarget.id, warningMs };
