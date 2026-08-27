@@ -73,8 +73,10 @@ test('HTTP/WebSocket simulation covers auth, hot gift mapping, lifecycle, boss, 
     result = await request(base, '/api/admin/gift', token, { targetPlayerId, giftId: '5655' });
     assert.equal(result.response.status, 200); assert.equal(result.data.result.powerId, 'tactical-shield');
 
+    await sleep(300); // Preserve the production admin rate limit instead of bypassing it in integration.
     result = await request(base, '/api/admin/gift-mappings', token, { ...mappingRead.data.mappings.find((mapping) => mapping.giftId === '5655'), giftId: '5655', giftName: 'Rose', enabled: true, powerId: 'chain-lightning', targetMode: 'ENEMY', magnitude: 12, durationMs: 700, cooldownMs: 0, visualPreset: 'chain-lightning', soundPreset: 'lightning', narrationPreset: 'hype' });
     assert.equal(result.response.status, 200); assert.equal(result.data.mapping.powerId, 'chain-lightning');
+    await sleep(300);
     result = await request(base, '/api/admin/gift', token, { targetPlayerId, giftId: '5655' });
     assert.equal(result.response.status, 200); assert.equal(result.data.result.powerId, 'chain-lightning');
 
