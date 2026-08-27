@@ -107,6 +107,18 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Amend bootstrap lint cleanup
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('qa/audit-fix-bootstrap.py')
+          text = path.read_text(encoding='utf-8')
+          marker = "# Replay runner can now replay both legacy GIFT and mapped PowerExecutor GIFT paths.\n"
+          insertion = "replace_once('qa/replay-runner.js', \"import { assertValidState } from './invariants.js';\\n\", '')\nreplace_between('qa/replay-runner.js', 'const pickOutcome', 'function assertExpected', '')\n\n"
+          if marker not in text:
+              raise SystemExit('replay cleanup insertion marker missing')
+          path.write_text(text.replace(marker, insertion + marker, 1), encoding='utf-8')
+          PY
       - name: Apply reviewed audit fixes
         run: python3 qa/audit-fix-bootstrap.py
       - name: ESLint final audit
