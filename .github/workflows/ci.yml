@@ -95,8 +95,8 @@ jobs:
       - run: npm ci
       - run: npm run test:gameplay:1000
 
-  eslint-bootstrap:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/codex/neon-royale' && contains(github.event.head_commit.message, '[eslint-bootstrap]')
+  audit-fix-bootstrap:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/codex/neon-royale' && contains(github.event.head_commit.message, '[audit-fix-bootstrap]')
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -106,15 +106,54 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Install ESLint dependencies and refresh lockfile
-        run: npm install
-      - name: Capture ESLint audit
-        run: npm run lint > .eslint-audit.txt 2>&1 || true
-      - name: Commit generated lockfile and audit report
+      - run: npm ci
+      - name: Apply reviewed audit fixes
+        run: python3 qa/audit-fix-bootstrap.py
+      - name: ESLint final audit
+        run: npm run lint
+      - name: UTF-8 and mojibake audit
+        run: |
+          node --input-type=module <<'NODE'
+          import { readdirSync, readFileSync, statSync } from 'node:fs';
+          import { extname, join } from 'node:path';
+          const roots = ['server', 'src'];
+          const extensions = new Set(['.js', '.jsx', '.css', '.json', '.html', '.md']);
+          const files = [];
+          const walk = (dir) => {
+            for (const name of readdirSync(dir)) {
+              const path = join(dir, name);
+              if (statSync(path).isDirectory()) walk(path);
+              else if (extensions.has(extname(path))) files.push(path);
+            }
+          };
+          roots.forEach(walk);
+          const decoder = new TextDecoder('utf-8', { fatal: true });
+          const issues = [];
+          for (const file of files) {
+            let text;
+            try { text = decoder.decode(readFileSync(file)); }
+            catch (error) { issues.push(`${file}: invalid UTF-8: ${error.message}`); continue; }
+            for (const marker of ['\uFFFD', 'Ã', 'Â', 'ð']) {
+              if (text.includes(marker)) issues.push(`${file}: suspicious mojibake marker ${JSON.stringify(marker)}`);
+            }
+          }
+          if (issues.length) {
+            console.error(issues.join('\n'));
+            process.exit(1);
+          }
+          console.log(`ENCODING_OK ${files.length} text files scanned`);
+          NODE
+      - name: Full regression validation
+        run: RUN_INTEGRATION_TESTS=true npm run check
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+      - name: Diff hygiene
+        run: git diff --check
+      - name: Commit audited fixes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package-lock.json .eslint-audit.txt
+          git add -A
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m "chore: capture eslint audit [skip render]"
+          git commit -m "chore: add eslint and harden audited paths [skip render]"
           git push origin HEAD:codex/neon-royale
