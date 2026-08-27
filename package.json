@@ -7,14 +7,16 @@
     "dev": "concurrently -k \"node --watch server/index.js\" \"vite --host 0.0.0.0\"",
     "build": "vite build",
     "start": "node server/index.js",
-    "test": "node --test server/*.test.js qa/gameplay-bot.test.js qa/chaos-bot.test.js",
+    "test": "node --test server/*.test.js qa/*.test.js",
     "test:gameplay": "node qa/gameplay-bot.js --rounds=1",
     "test:gameplay:10": "node qa/gameplay-bot.js --rounds=10",
     "test:gameplay:100": "node qa/gameplay-bot.js --rounds=100",
     "test:gameplay:1000": "node qa/gameplay-bot.js --rounds=1000",
     "test:panel": "playwright test",
     "test:chaos": "NODE_ENV=test MOCK_MODE=true QA_CHAOS_ACK=I_UNDERSTAND_LOCAL_ONLY node qa/chaos-bot.js --i-understand-chaos",
-    "check": "node --check server/index.js && node --check server/engine.js && node --check server/gifts.js && node --check server/admin.js && node --check server/leaderboard.js && node --check qa/gameplay-bot.js && node --check qa/chaos-bot.js && npm test && vite build"
+    "test:replay": "node --test server/replay.test.js qa/replay-runner.test.js",
+    "replay": "node qa/replay-runner.js",
+    "check": "node --check server/index.js && node --check server/engine.js && node --check server/gifts.js && node --check server/admin.js && node --check server/leaderboard.js && node --check server/replay.js && node --check qa/gameplay-bot.js && node --check qa/chaos-bot.js && node --check qa/replay-runner.js && npm test && vite build"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.57.4",
