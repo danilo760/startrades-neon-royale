@@ -141,12 +141,18 @@ jobs:
           roots.forEach(walk);
           const decoder = new TextDecoder('utf-8', { fatal: true });
           const issues = [];
+          const mojibakePatterns = [
+            [/\uFFFD/u, 'replacement character'],
+            [/Ã[\u0080-\u00BF]/u, 'misdecoded UTF-8 after Ã'],
+            [/Â[\u0080-\u00BF]/u, 'misdecoded UTF-8 after Â'],
+            [/ð(?:[\u0080-\u00BF]|Ÿ|ƒ|œ|™|€)/u, 'misdecoded UTF-8 after ð'],
+          ];
           for (const file of files) {
             let text;
             try { text = decoder.decode(readFileSync(file)); }
             catch (error) { issues.push(`${file}: invalid UTF-8: ${error.message}`); continue; }
-            for (const marker of ['\uFFFD', 'Ã', 'Â', 'ð']) {
-              if (text.includes(marker)) issues.push(`${file}: suspicious mojibake marker ${JSON.stringify(marker)}`);
+            for (const [pattern, label] of mojibakePatterns) {
+              if (pattern.test(text)) issues.push(`${file}: suspicious ${label}`);
             }
           }
           if (issues.length) {
